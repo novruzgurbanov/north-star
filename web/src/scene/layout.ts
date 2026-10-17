@@ -36,7 +36,7 @@ export function milestonePositions(goalId: string, count: number): Vec3[] {
   let y = 0
   for (let i = 0; i < count; i++) {
     angle += (rand() - 0.5) * 1.9 + (i % 2 === 0 ? 0.5 : -0.2)
-    const step = 1.7 + rand() * 1.3
+    const step = 2.9 + rand() * 1.4
     x += Math.cos(angle) * step
     y += Math.sin(angle) * step * 0.8
     out.push([x, y, (rand() - 0.5) * 1.6])

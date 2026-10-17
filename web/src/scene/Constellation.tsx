@@ -47,27 +47,28 @@ export function Star({ position, color, brightness, size, dim, seed, bornAt, del
     if (bornAt !== undefined) {
       sinceBirth = t - bornAt - delay
       appear = sinceBirth < 0 ? 0 : clamp01(sinceBirth / 1.1)
-      if (sinceBirth > 0) flash = Math.exp(-sinceBirth * 1.9) * (shockwave ? 1.4 : 0.7)
+      if (sinceBirth > 0) flash = Math.exp(-sinceBirth * 1.9) * (shockwave ? 0.9 : 0.45)
     }
     if (flashAt !== undefined) {
       const since = t - flashAt
-      if (since >= 0 && since < 5) flash = Math.max(flash, Math.exp(-since * 1.6) * 1.1)
+      // A gentle swell and settle (rises over ~0.4 s, fades over ~2 s), not a pop.
+      if (since >= 0 && since < 5) flash = Math.max(flash, (1 - Math.exp(-since * 6)) * Math.exp(-since * 1.2) * 0.45)
     }
     if (listening) flash = Math.max(flash, voiceLevel.current * 0.45)
     if (pulse) flash = Math.max(flash, (Math.sin(t * 2.4) * 0.5 + 0.5) * 0.22)
-    current.current += (brightness - current.current) * Math.min(1, dt * 1.2)
+    current.current += (brightness - current.current) * Math.min(1, dt * 0.9)
     const b = current.current
     const twinkle = 1 + Math.sin(t * (1.1 + (seed % 7) * 0.13) + seed) * 0.07
-    const s = size * (0.5 + b * 1.3) * twinkle * Math.max(0, easeOutBack(appear)) + size * flash * 2.6
+    const s = size * (0.55 + b * 0.75) * twinkle * Math.max(0, easeOutBack(appear)) + size * flash * 1.1
 
-    halo.current.scale.setScalar(s * 2.4)
+    halo.current.scale.setScalar(s * 2.0)
     core.current.scale.setScalar(s * 0.55)
     const hm = halo.current.material
-    hm.opacity = Math.min(1, ((0.16 + b * 0.84) * appear + flash * 0.7) * dim)
-    hm.color.copy(base).multiplyScalar(0.5 + b * 1.9 + flash * 2.4)
+    hm.opacity = Math.min(1, ((0.16 + b * 0.62) * appear + flash * 0.35) * dim)
+    hm.color.copy(base).multiplyScalar(0.5 + b * 1.25 + flash * 1.1)
     const cm = core.current.material
-    cm.opacity = Math.min(1, (0.35 + b * 0.65) * appear * dim + flash * 0.4)
-    cm.color.copy(white).lerp(base, 0.25).multiplyScalar(0.8 + b * 2.2 + flash * 2)
+    cm.opacity = Math.min(1, (0.35 + b * 0.65) * appear * dim + flash * 0.25)
+    cm.color.copy(white).lerp(base, 0.25).multiplyScalar(0.8 + b * 1.5 + flash * 1.0)
 
     if (ring.current) {
       const r = sinceBirth
@@ -115,7 +116,7 @@ function Segment({ from, to, color, lit, dim, bornAt, delay }: {
 }
 
 // Details orbit the goal star as tiny satellites, tinted by what they are.
-const DETAIL_TINT: Record<DetailKind, string | null> = {
+export const DETAIL_TINT: Record<DetailKind, string | null> = {
   motivation: '#ffd59e',
   on_track: '#8dffc7',
   action: null,
@@ -124,9 +125,9 @@ const DETAIL_TINT: Record<DetailKind, string | null> = {
   distraction: '#ff6b81',
 }
 
-function detailPosition(i: number, total: number, scale: number): Vec3 {
+export function detailPosition(i: number, total: number, scale: number): Vec3 {
   const angle = (i / Math.max(1, total)) * Math.PI * 2 + 0.7
-  const r = (1.5 + (i % 3) * 0.32) * scale
+  const r = (3.0 + (i % 3) * 0.55) * scale
   return [Math.cos(angle) * r, Math.sin(angle) * r * 0.75, Math.sin(angle * 2) * 0.5 * scale]
 }
 

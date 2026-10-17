@@ -4,10 +4,10 @@ import { Line, Stars } from '@react-three/drei'
 import { Bloom, EffectComposer, Noise, Vignette } from '@react-three/postprocessing'
 import * as THREE from 'three'
 import type { Goal, PointsRow, PublicGoal, User } from '../types'
-import { Constellation, Star } from './Constellation'
+import { Constellation, DETAIL_TINT, Star, detailPosition } from './Constellation'
 import { Protostar } from './Protostar'
 import { cloudTexture, hash, rng } from './textures'
-import { add, myGoalOrigin, otherUserOrigin, type Vec3 } from './layout'
+import { add, milestonePositions, myGoalOrigin, otherUserOrigin, type Vec3 } from './layout'
 
 export type View = 'sky' | 'cosmos'
 
@@ -266,6 +266,23 @@ function asPublic(goals: Goal[]): PublicGoal[] {
   }))
 }
 
+const DETAIL_WORD: Record<string, string> = {
+  motivation: 'Why', on_track: 'On track', obstacle: 'In the way', distraction: 'Distraction', subgoal: 'Sub-goal', action: 'Action',
+}
+
+function SkyLegend({ color }: { color: string }) {
+  return (
+    <div className="sky-legend glass" aria-label="What the stars mean">
+      <div className="lg-row"><span className="lg-dot lg-goal" style={{ background: color }} />Your goal</div>
+      <div className="lg-row"><span className="lg-dot" style={{ background: color }} />Milestone <span className="lg-hint">lit when done</span></div>
+      <div className="lg-row"><span className="lg-dot lg-small" style={{ background: color }} />Sub-goal or action</div>
+      <div className="lg-row"><span className="lg-dot lg-small" style={{ background: '#ffd59e' }} />Why it matters</div>
+      <div className="lg-row"><span className="lg-dot lg-small" style={{ background: '#8dffc7' }} />What working on it looks like</div>
+      <div className="lg-row"><span className="lg-dot lg-small" style={{ background: '#ff8fa3' }} />Obstacle or distraction</div>
+    </div>
+  )
+}
+
 export function Universe({ me, myGoals, bornAt, focusGoalId, forgeIndex, discovering, understanding, view, others,
   myScore, focusing, frame, onPickGoal, onPickPlayer }: Props) {
   const labelEls = useRef(new Map<string, HTMLDivElement>())
@@ -278,7 +295,7 @@ export function Universe({ me, myGoals, bornAt, focusGoalId, forgeIndex, discove
   // Where the camera rests: the focused constellation, all my stars, or the whole cosmos.
   const home = useMemo<Home>(() => {
     if (cosmos) return { center: [0, -2, 0], distance: 112, pitch: 0.42, key: 'cosmos' }
-    if (focusGoal && !discovering) return { center: myGoalOrigin(focusIndex), distance: 19, pitch: 0.06, key: `goal:${focusGoal.id}` }
+    if (focusGoal && !discovering) return { center: myGoalOrigin(focusIndex), distance: 25, pitch: 0.06, key: `goal:${focusGoal.id}` }
     const pts = myGoals.map((_, i) => myGoalOrigin(i))
     if (discovering) pts.push(myGoalOrigin(forgeIndex))
     if (pts.length === 0) return { center: [0, 0, 0], distance: 20, pitch: 0.06, key: 'empty' }
@@ -292,6 +309,25 @@ export function Universe({ me, myGoals, bornAt, focusGoalId, forgeIndex, discove
       key: `mine:${g.id}`, position: add(myGoalOrigin(i), [0, -2.2, 0]), visible: true, onClick: () => onPickGoal?.(g.id),
       title: 'Open this star', node: <span className="star-label-goal-title">{g.title}</span>,
     }))
+  }
+  // Focus mode: name every star so the constellation explains itself.
+  if (!cosmos && focusGoal && !discovering) {
+    const origin = myGoalOrigin(focusIndex)
+    const scale = focusGoal.status === 'brainstorm' ? 0.8 : 1
+    const ms = [...focusGoal.milestones].sort((a, b) => a.order - b.order)
+    const mPos = milestonePositions(focusGoal.id, ms.length)
+    ms.forEach((m, i) => labels.push({
+      key: `m:${m.id}`, position: add(origin, [mPos[i][0] * scale, mPos[i][1] * scale - 0.85, mPos[i][2] * scale]), visible: true,
+      node: <span className={`sky-tag ${m.done ? 'is-done' : ''}`}>{m.title}</span>,
+    }))
+    const details = focusGoal.details ?? []
+    details.forEach((d, i) => {
+      const p = detailPosition(i, details.length, scale)
+      labels.push({
+        key: `d:${d.id}`, position: add(origin, [p[0], p[1] - 0.6, p[2]]), visible: true,
+        node: <span className="sky-tag is-detail" style={{ ['--tint' as string]: DETAIL_TINT[d.kind] ?? color }}>{DETAIL_WORD[d.kind]} · {d.text}</span>,
+      })
+    })
   }
   if (cosmos && me) {
     labels.push({
@@ -373,6 +409,7 @@ export function Universe({ me, myGoals, bornAt, focusGoalId, forgeIndex, discove
         <Vignette offset={0.22} darkness={0.78} />
       </EffectComposer>
     </Canvas>
+    {!cosmos && focusGoal && !discovering && <SkyLegend color={color} />}
     <div className="label-layer" aria-hidden={false}>
       {labels.map(l => (
         <div key={l.key} className="label-anchor" style={{ visibility: 'hidden' }}

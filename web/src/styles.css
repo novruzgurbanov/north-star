@@ -777,3 +777,22 @@ button:not(:disabled):active { transform: scale(0.97); transition: transform 90m
 /* Labels projected from the 3D scene (no per-label React roots) */
 .label-layer { position: absolute; inset: 0; pointer-events: none; overflow: hidden; z-index: 1; }
 .label-anchor { position: absolute; left: 0; top: 0; will-change: transform; }
+
+/* Focus mode: tags under each star, and a small legend */
+.sky-tag {
+  display: inline-block; max-width: 170px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  font-size: 11.5px; color: var(--faint); text-shadow: 0 1px 8px rgba(0, 0, 0, 0.9);
+}
+.sky-tag.is-done { color: var(--text); }
+.sky-tag.is-detail { font-size: 10.5px; color: color-mix(in srgb, var(--tint) 70%, white 10%); opacity: 0.85; }
+.label-anchor .star-label:has(.sky-tag) { padding: 0; background: none; border: 0; backdrop-filter: none; -webkit-backdrop-filter: none; }
+.sky-legend {
+  position: absolute; z-index: 9; right: 16px; top: 64px; padding: 10px 12px; border-radius: 14px;
+  display: flex; flex-direction: column; gap: 5px; font-size: 11.5px; color: var(--muted); animation: materialize .4s var(--ease) both;
+}
+.lg-row { display: flex; align-items: center; gap: 8px; white-space: nowrap; }
+.lg-dot { width: 7px; height: 7px; border-radius: 50%; flex: none; box-shadow: 0 0 6px currentColor; }
+.lg-goal { width: 10px; height: 10px; }
+.lg-small { width: 5px; height: 5px; margin-inline: 1px; }
+.lg-hint { color: var(--faint); }
+@media (max-width: 900px) { .sky-legend { display: none; } }
