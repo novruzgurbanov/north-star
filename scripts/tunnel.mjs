@@ -1,4 +1,4 @@
-// Exposes the shared points service (port 8788) through a free Cloudflare quick tunnel.
+// Exposes the shared points service (POINTS_PORT, 8888 in v2) through a free Cloudflare quick tunnel.
 // Wrapped in Node because npm runs scripts through cmd.exe, which mangles quoted paths with spaces.
 import { spawn } from 'node:child_process';
 import { existsSync } from 'node:fs';
@@ -9,7 +9,7 @@ const candidates = [
   'C:\Program Files\cloudflared\cloudflared.exe',
 ].filter(Boolean);
 const bin = candidates.find((p) => existsSync(p)) ?? 'cloudflared';
-const port = process.env.POINTS_PORT || '8788';
+const port = process.env.POINTS_PORT || '8888';
 
 const child = spawn(bin, ['tunnel', '--no-autoupdate', '--url', `http://localhost:${port}`], { stdio: ['ignore', 'pipe', 'pipe'] });
 let announced = false;

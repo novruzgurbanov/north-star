@@ -14,8 +14,8 @@ function httpURL(value) {
   }
   return parsed;
 }
-const WEB_URL = httpURL(process.env.WEB_URL || 'http://localhost:5173');
-const API_URL = httpURL(process.env.API_URL || 'http://localhost:8787');
+const WEB_URL = httpURL(process.env.WEB_URL || 'http://localhost:5273');
+const API_URL = httpURL(process.env.API_URL || 'http://localhost:8887');
 const rawSeconds = Number(process.env.CHECK_SECONDS || 20);
 const CHECK_SECONDS = Number.isFinite(rawSeconds) ? Math.max(10, rawSeconds) : 20;
 const rawCooldown = Number(process.env.NOTIFY_COOLDOWN_SECONDS || 20);
@@ -28,7 +28,7 @@ const CAPTURE_URL = pathToFileURL(join(ROOT, 'capture.html')).href;
 const runtimePath = join(ROOT, '.north-star-runtime', SELFTEST ? 'selftest' : 'app');
 mkdirSync(runtimePath, { recursive: true });
 app.setPath('userData', runtimePath);
-app.setName('North Star');
+app.setName('North Star v2');
 app.setAppUserModelId('NorthStar.Desktop');
 
 let mainWindow = null;
@@ -288,10 +288,10 @@ async function loadWebUI() {
 }
 
 function createWindows() {
-  const ses = session.fromPartition('persist:north-star', { cache: false }); // persist: keeps localStorage (who you are) across launches
+  const ses = session.fromPartition('persist:north-star-v2', { cache: false }); // persist: keeps localStorage (who you are) across launches
   mainWindow = new BrowserWindow({
     width: 1440, height: 900, minWidth: 960, minHeight: 640,
-    title: 'North Star', backgroundColor: '#020309', show: false,
+    title: 'North Star v2', backgroundColor: '#020309', show: false,
     titleBarStyle: 'hidden',
     titleBarOverlay: { color: '#020309', symbolColor: '#c9d4f2', height: 40 },
     webPreferences: { preload: join(ROOT, 'preload.cjs'), contextIsolation: true,
