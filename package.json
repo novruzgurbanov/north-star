@@ -1,0 +1,17 @@
+{
+  "name": "north-star",
+  "private": true,
+  "scripts": {
+    "setup": "npm install && npm --prefix points install && npm --prefix server install && npm --prefix web install && npm --prefix desktop install",
+    "seed": "npm --prefix points run seed && npm --prefix server run seed",
+    "dev": "concurrently -k -n points,api,web -c yellow,magenta,cyan \"npm --prefix points run dev\" \"npm --prefix server run dev\" \"npm --prefix web run dev\"",
+    "typecheck": "npm --prefix server run typecheck && npm --prefix web run typecheck",
+    "desktop": "concurrently --kill-others-on-fail -n points,api,web,app -c yellow,magenta,cyan,green \"npm --prefix points run dev\" \"npm --prefix server run dev\" \"npm --prefix web run dev\" \"wait-on http://localhost:5173 && npm --prefix desktop start\"",
+    "tunnel": "\"C:/Program Files (x86)/cloudflared/cloudflared.exe\" tunnel --no-autoupdate --url http://localhost:8788",
+    "app": "npm --prefix desktop start"
+  },
+  "devDependencies": {
+    "concurrently": "^10.0.6",
+    "wait-on": "^9.5.1"
+  }
+}

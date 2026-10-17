@@ -1,0 +1,29 @@
+{
+  "name": "north-star-server",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "tsx watch src/index.ts",
+    "start": "tsx src/index.ts",
+    "seed": "tsx src/seed.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@huggingface/transformers": "^4.3.1",
+    "cors": "^2.8.6",
+    "dotenv": "^18.0.8",
+    "express": "^5.3.0",
+    "nanoid": "^6.0.2",
+    "neo4j-driver": "^6.2.0",
+    "openai": "^7.36.0",
+    "zod": "^4.6.7"
+  },
+  "devDependencies": {
+    "@types/cors": "^2.8.19",
+    "@types/express": "^5.0.6",
+    "@types/node": "^26.6.5",
+    "jimp": "^1.6.1",
+    "tsx": "^4.23.15",
+    "typescript": "^7.0.2"
+  }
+}

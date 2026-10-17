@@ -1,0 +1,15 @@
+{
+  "name": "north-star-desktop",
+  "private": true,
+  "version": "0.1.0",
+  "description": "North Star desktop shell with focus verification",
+  "main": "main.mjs",
+  "scripts": {
+    "start": "electron .",
+    "test": "node --test test/",
+    "selftest": "node scripts/selftest.mjs"
+  },
+  "devDependencies": {
+    "electron": "^44.8.0"
+  }
+}
