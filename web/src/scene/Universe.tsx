@@ -44,6 +44,7 @@ type Props = {
   myScore: number
   focusing: string | null
   nav?: boolean
+  onPickPlayer?: (playerId: string) => void
 }
 
 function Nebula() {
@@ -99,12 +100,14 @@ function CameraRig({ view, focus, panel, nav }: { view: View; focus: Vec3; panel
   return null
 }
 
-function UserLabel({ position, name, goal, score, color, visible, you, live }: {
+function UserLabel({ position, name, goal, score, color, visible, you, live, onClick }: {
   position: Vec3; name: string; goal?: string | null; score: number; color: string; visible: boolean; you?: boolean; live?: boolean
+  onClick?: () => void
 }) {
   return (
-    <Html position={position} center zIndexRange={[5, 0]} style={{ pointerEvents: 'none' }}>
-      <div className={`star-label ${visible ? 'is-visible' : ''} ${you ? 'is-you' : ''}`}>
+    <Html position={position} center zIndexRange={[5, 0]} style={{ pointerEvents: visible && onClick ? 'auto' : 'none' }}>
+      <div className={`star-label ${visible ? 'is-visible' : ''} ${you ? 'is-you' : ''} ${onClick ? 'is-clickable' : ''}`} onClick={onClick}
+        role={onClick ? 'button' : undefined} title={onClick ? `See ${name}'s star` : undefined}>
         <span className={`star-label-dot ${live ? 'is-live' : ''}`} style={{ background: color, boxShadow: `0 0 10px ${color}` }} />
         <span className="star-label-text">
           <span className="star-label-name">{you ? 'You' : name}<span className="star-label-score">{score.toLocaleString()}</span></span>
@@ -115,7 +118,7 @@ function UserLabel({ position, name, goal, score, color, visible, you, live }: {
   )
 }
 
-export function Universe({ me, myGoals, bornAt, focusIndex, discovering, understanding, view, others, myScore, focusing, nav = false }: Props) {
+export function Universe({ me, myGoals, bornAt, focusIndex, discovering, understanding, view, others, myScore, focusing, nav = false, onPickPlayer }: Props) {
   const color = me?.color ?? '#cfe2ff'
   const focus = myGoalOrigin(focusIndex)
   const cosmos = view === 'cosmos'
@@ -147,7 +150,15 @@ export function Universe({ me, myGoals, bornAt, focusIndex, discovering, underst
             <Constellation goal={playerConstellation(p)} color={p.color} origin={origin}
               dim={cosmos ? 0.95 : 0.4} scale={0.9} pulse={p.live} />
             <UserLabel position={add(origin, [0, 5.2, 0])} name={p.name} goal={p.goalTitle} score={p.points}
-              color={p.color} visible={cosmos} live={p.live} />
+              color={p.color} visible={cosmos} live={p.live} onClick={() => onPickPlayer?.(p.id)} />
+            {cosmos && (
+              // Invisible hit area so the constellation itself can be clicked.
+              <mesh position={origin} onClick={e => { e.stopPropagation(); onPickPlayer?.(p.id) }}
+                onPointerOver={() => { document.body.style.cursor = 'pointer' }} onPointerOut={() => { document.body.style.cursor = '' }}>
+                <sphereGeometry args={[4.2, 12, 12]} />
+                <meshBasicMaterial transparent opacity={0} depthWrite={false} />
+              </mesh>
+            )}
           </group>
         )
       })}

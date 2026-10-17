@@ -4,6 +4,18 @@ export type DetailKind = 'subgoal' | 'action' | 'motivation' | 'obstacle' | 'dis
 
 export type GoalDetail = { id: string; kind: DetailKind; text: string; createdAt: string }
 
+export type Session = {
+  id: string; task: string; plannedMinutes: number; activeSeconds: number
+  verifiedSeconds: number; drifts: number; headline: string; endedAt: string
+}
+
+export type NextStep = { task: string; minutes: number; why: string; milestoneId: string | null }
+
+export type Recap = {
+  session: Session; headline: string; summary: string; driftNote: string
+  next: { task: string; minutes: number }; suggestMilestoneId: string | null
+}
+
 export type Goal = {
   id: string
   title: string
@@ -17,6 +29,7 @@ export type Goal = {
   status?: 'brainstorm' | 'ready'
   missing?: Array<'success' | 'steps' | 'why'>
   details?: GoalDetail[]
+  sessions?: Session[]
 }
 
 export type User = { id: string; name: string; color: string; seeded: boolean; pointsPlayerId?: string | null }
@@ -113,13 +126,23 @@ export type FocusState = {
   lastResult: { goal: Goal; stats: Stats; points: PointsRow | null } | null
   error: string | null
   notice?: string | null
+  task?: string | null
+  plannedMinutes?: number | null
+  activeSeconds: number
+  activeSince: string | null
+  history?: Array<Pick<FocusCheck, 'at' | 'verdict' | 'confidence' | 'reason' | 'counted' | 'countedSeconds'>>
+  lastSession?: {
+    goalId: string; goalTitle: string; task: string | null; plannedMinutes: number | null
+    activeSeconds: number; verifiedSeconds: number; completed: boolean; endedAt: string
+    history: Array<Pick<FocusCheck, 'at' | 'verdict' | 'reason'>>
+  } | null
 }
 
 export interface NorthStarDesktop {
   isDesktop: true
   platform: string
   focus: {
-    start(opts: { userId: string; goalId: string; goalTitle: string; camera: boolean }): Promise<FocusState>
+    start(opts: { userId: string; goalId: string; goalTitle: string; camera: boolean; task?: string; plannedMinutes?: number }): Promise<FocusState>
     pause(): Promise<FocusState>
     resume(): Promise<FocusState>
     stop(): Promise<FocusState>

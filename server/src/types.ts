@@ -15,6 +15,20 @@ export const DETAIL_KINDS: readonly DetailKind[] = [
 
 export type GoalDetail = { id: string; kind: DetailKind; text: string; createdAt: string };
 
+export type Session = {
+  id: string;
+  task: string;
+  plannedMinutes: number;
+  activeSeconds: number;
+  verifiedSeconds: number;
+  drifts: number; // number of off_track checks in the session
+  headline: string;
+  endedAt: string; // ISO
+};
+
+/** One focus-check verdict as the desktop app reported it during a session. */
+export type SessionCheck = { at: string; verdict: 'on_track' | 'off_track' | 'uncertain'; reason: string };
+
 export type Goal = {
   id: string;
   title: string;
@@ -27,6 +41,7 @@ export type Goal = {
   createdAt: string; // ISO
   milestones: Milestone[]; // sorted by order
   details: GoalDetail[]; // small facts recorded by the coach, sorted by createdAt
+  sessions: Session[]; // the 5 most recent focus sessions, newest first
 };
 
 export type User = { id: string; name: string; color: string; seeded: boolean; pointsPlayerId: string | null };

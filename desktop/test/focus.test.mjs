@@ -68,12 +68,19 @@ test('start publishes the exact bridge state and schedules first check at 5 seco
     'status', 'userId', 'goalId', 'goalTitle', 'startedAt', 'nextCheckAt', 'checkSeconds',
     'notificationsEnabled', 'sessionVerifiedSeconds', 'checks', 'cameraEnabled', 'cameraActive',
     'lastCheck', 'lastResult', 'error', 'notice',
+    'task', 'plannedMinutes', 'activeSeconds', 'activeSince', 'history', 'lastSession',
   ].sort());
   assert.equal(state.notice, null);
   assert.equal(state.notificationsEnabled, true);
   assert.equal(state.status, 'active');
   assert.equal(state.startedAt, new Date(0).toISOString());
   assert.equal(state.nextCheckAt, new Date(5_000).toISOString());
+  assert.equal(state.task, null);
+  assert.equal(state.plannedMinutes, null);
+  assert.equal(state.activeSeconds, 0);
+  assert.equal(state.activeSince, state.startedAt);
+  assert.deepEqual(state.history, []);
+  assert.equal(state.lastSession, null);
   await clock.tick(4_999);
   assert.equal(requests.length, 0);
   await clock.tick(1);
@@ -82,6 +89,9 @@ test('start publishes the exact bridge state and schedules first check at 5 seco
   assert.equal(controller.getState().checks, 1);
   assert.equal(controller.getState().sessionVerifiedSeconds, 5);
   assert.equal(controller.getState().nextCheckAt, new Date(15_000).toISOString());
+  assert.equal(controller.getState().history.length, 1);
+  assert.equal(controller.getState().activeSeconds, 0); // banked only on pause/stop/error/completion
+  assert.equal(controller.getState().activeSince, new Date(0).toISOString());
   assert.deepEqual(controller.getState().lastResult, {
     goal: result().goal, stats: result().stats, points: result().points,
   });
@@ -530,4 +540,247 @@ test('a malformed notifyAbove falls back to the 0.7 default', async () => {
   await clock.tick(35_000); // checks at 5s, 15s, 25s, 35s
   assert.equal(notifications.length, 1); // only the 0.75 check clears the 0.7 fallback
   assert.equal(notifications[0].at, 15_000);
+});
+
+test('start stores a trimmed task and plannedMinutes; invalid values are ignored', async () => {
+  const { controller, clock } = harness();
+  const state = controller.start({ ...OPTIONS, task: '  Outline the recap flow  ', plannedMinutes: 25 });
+  assert.equal(state.task, 'Outline the recap flow');
+  assert.equal(state.plannedMinutes, 25);
+  controller.stop();
+  for (const task of [undefined, null, 42, '', '   ', 'x'.repeat(121)]) {
+    const next = controller.start({ ...OPTIONS, task });
+    assert.equal(next.task, null);
+    assert.equal(next.status, 'active'); // the session still starts
+    controller.stop();
+  }
+  for (const plannedMinutes of [undefined, null, 4, 181, 25.5, '25', Number.NaN]) {
+    const next = controller.start({ ...OPTIONS, plannedMinutes });
+    assert.equal(next.plannedMinutes, null);
+    assert.equal(next.status, 'active');
+    controller.stop();
+  }
+  assert.equal(controller.start({ ...OPTIONS, task: 'x'.repeat(120) }).task, 'x'.repeat(120));
+  controller.stop();
+  assert.equal(controller.start({ ...OPTIONS, plannedMinutes: 5 }).plannedMinutes, 5);
+  controller.stop();
+  assert.equal(controller.start({ ...OPTIONS, plannedMinutes: 180 }).plannedMinutes, 180);
+  controller.stop();
+  // An invalid plannedMinutes never arms a completion timer.
+  controller.start({ ...OPTIONS, plannedMinutes: 4 });
+  await clock.tick(600_000);
+  assert.equal(controller.getState().status, 'active');
+});
+
+test('plannedMinutes completion fires after the planned active time, excluding a pause', async () => {
+  const { controller, clock, requests } = harness();
+  controller.start({ ...OPTIONS, task: 'Draft the recap', plannedMinutes: 5 });
+  await clock.tick(100_000);
+  assert.equal(controller.getState().status, 'active');
+  const paused = controller.pause();
+  assert.equal(paused.activeSeconds, 100);
+  assert.equal(paused.activeSince, null);
+  await clock.tick(120_000); // paused time must not count toward the plan
+  assert.equal(controller.getState().status, 'paused');
+  assert.equal(controller.getState().lastSession, null);
+  const resumed = controller.resume();
+  assert.equal(resumed.activeSince, new Date(220_000).toISOString());
+  await clock.tick(199_999);
+  assert.equal(controller.getState().status, 'active');
+  await clock.tick(1); // 100 active seconds before the pause + 200 after it
+  const done = controller.getState();
+  assert.equal(done.status, 'idle');
+  assert.equal(done.lastSession.completed, true);
+  assert.equal(done.lastSession.activeSeconds, 300);
+  assert.equal(done.lastSession.verifiedSeconds, 290);
+  assert.equal(done.lastSession.plannedMinutes, 5);
+  assert.equal(done.task, 'Draft the recap');
+  await clock.tick(60_000);
+  assert.equal(requests.length, 30); // no further checks after completion
+});
+
+test('a completed session records the full lastSession', async () => {
+  const { controller, clock, requests, cameras } = harness();
+  controller.start({ ...OPTIONS, task: 'Write docs', plannedMinutes: 5 });
+  await clock.tick(300_000);
+  const state = controller.getState();
+  assert.equal(state.status, 'idle');
+  assert.equal(state.cameraActive, false);
+  assert.equal(state.nextCheckAt, null);
+  assert.equal(cameras.at(-1), false); // camera released
+  const done = state.lastSession;
+  assert.deepEqual(Object.keys(done).sort(), [
+    'goalId', 'goalTitle', 'task', 'plannedMinutes', 'activeSeconds',
+    'verifiedSeconds', 'history', 'completed', 'endedAt',
+  ].sort());
+  assert.equal(done.goalId, 'goal-1');
+  assert.equal(done.goalTitle, 'Build North Star');
+  assert.equal(done.task, 'Write docs');
+  assert.equal(done.plannedMinutes, 5);
+  assert.equal(done.activeSeconds, 300);
+  assert.equal(done.verifiedSeconds, 295);
+  assert.equal(done.completed, true);
+  assert.equal(done.endedAt, new Date(300_000).toISOString());
+  assert.equal(done.history.length, 30);
+  assert.deepEqual(Object.keys(done.history[0]).sort(),
+    ['at', 'verdict', 'confidence', 'reason', 'counted', 'countedSeconds'].sort());
+  assert.deepEqual(done.history[0], {
+    at: new Date(5_000).toISOString(), verdict: 'on_track', confidence: 0.9,
+    reason: "You're building your app.", counted: true, countedSeconds: 5,
+  });
+  await clock.tick(60_000);
+  assert.equal(requests.length, 30); // the session stayed ended
+});
+
+test('stop while active records lastSession with completed false', async () => {
+  const { controller, clock } = harness();
+  controller.start({ ...OPTIONS, task: 'Read the spec', plannedMinutes: 25 });
+  await clock.tick(5_000);
+  const state = controller.stop();
+  assert.equal(state.status, 'idle');
+  const done = state.lastSession;
+  assert.equal(done.completed, false);
+  assert.equal(done.goalId, 'goal-1');
+  assert.equal(done.goalTitle, 'Build North Star');
+  assert.equal(done.task, 'Read the spec');
+  assert.equal(done.plannedMinutes, 25);
+  assert.equal(done.activeSeconds, 5);
+  assert.equal(done.verifiedSeconds, 5);
+  assert.equal(done.history.length, 1);
+  assert.equal(done.endedAt, new Date(5_000).toISOString());
+  // Stopping again from idle must not overwrite the record.
+  assert.deepEqual(controller.stop().lastSession, done);
+});
+
+test('stop from idle does not create a lastSession', () => {
+  const { controller } = harness();
+  assert.equal(controller.stop().lastSession, null);
+});
+
+test('history keeps the newest 200 checks of the session', async () => {
+  const { controller, clock } = harness();
+  controller.start(OPTIONS);
+  await clock.tick(2_100_000); // checks at 5 s then every 10 s → 210 checks
+  const state = controller.getState();
+  assert.equal(state.checks, 210);
+  assert.equal(state.history.length, 200);
+  assert.equal(state.history[0].at, new Date(105_000).toISOString()); // oldest 10 dropped
+  assert.equal(state.history.at(-1).at, new Date(2_095_000).toISOString());
+});
+
+test('start clears lastSession and history from the previous session', async () => {
+  const { controller, clock } = harness();
+  controller.start(OPTIONS);
+  await clock.tick(15_000); // two checks
+  assert.equal(controller.getState().history.length, 2);
+  controller.stop();
+  assert.notEqual(controller.getState().lastSession, null);
+  const next = controller.start({ ...OPTIONS, task: 'Fresh start' });
+  assert.equal(next.lastSession, null);
+  assert.deepEqual(next.history, []);
+  assert.equal(next.checks, 0);
+  assert.equal(next.sessionVerifiedSeconds, 0);
+  assert.equal(next.activeSeconds, 0);
+});
+
+test('a check in flight when time is up is included when it lands within 5 seconds', async () => {
+  const pending = deferred();
+  let calls = 0;
+  const { controller, clock } = harness({ check: () => {
+    calls += 1;
+    if (calls === 1) return Promise.resolve(result({ countedSeconds: 5 }));
+    if (calls === 30) return pending.promise;
+    return Promise.resolve(result({ countedSeconds: 10 }));
+  } });
+  controller.start({ ...OPTIONS, plannedMinutes: 5 });
+  await clock.tick(294_999); // 29 checks done (t=5..285)
+  assert.equal(calls, 29);
+  await clock.tick(1); // the 30th check starts at t=295 s and hangs
+  assert.equal(calls, 30);
+  await clock.tick(5_000); // t=300 s: completion fires while the check is in flight
+  assert.equal(controller.getState().status, 'active'); // grace window, not finalized yet
+  assert.equal(controller.getState().lastSession, null);
+  pending.resolve(result({ countedSeconds: 10 }));
+  await flush();
+  const state = controller.getState();
+  assert.equal(state.status, 'idle');
+  assert.equal(state.lastSession.completed, true);
+  assert.equal(state.lastSession.activeSeconds, 300);
+  assert.equal(state.lastSession.verifiedSeconds, 295); // the late check is included
+  assert.equal(state.lastSession.history.length, 30);
+  const endedAt = state.lastSession.endedAt;
+  await clock.tick(10_000); // the grace deadline must not finalize a second time
+  assert.equal(controller.getState().status, 'idle');
+  assert.equal(controller.getState().lastSession.endedAt, endedAt);
+});
+
+test('a check still in flight 5 seconds after time is up is ignored', async () => {
+  const pending = deferred();
+  let calls = 0;
+  const { controller, clock } = harness({ check: () => {
+    calls += 1;
+    if (calls === 1) return Promise.resolve(result({ countedSeconds: 5 }));
+    if (calls === 30) return pending.promise;
+    return Promise.resolve(result({ countedSeconds: 10 }));
+  } });
+  controller.start({ ...OPTIONS, plannedMinutes: 5 });
+  await clock.tick(295_000); // the 30th check starts at t=295 s and hangs
+  await clock.tick(5_000); // t=300 s: completion fires, grace begins
+  assert.equal(controller.getState().status, 'active');
+  assert.equal(controller.getState().lastSession, null);
+  await clock.tick(5_000); // t=305 s: the deadline finalizes without the late check
+  const state = controller.getState();
+  assert.equal(state.status, 'idle');
+  assert.equal(state.lastSession.completed, true);
+  assert.equal(state.lastSession.verifiedSeconds, 285);
+  assert.equal(state.lastSession.history.length, 29);
+  pending.resolve(result({ countedSeconds: 10 }));
+  await flush();
+  await clock.tick(10_000);
+  const after = controller.getState();
+  assert.equal(after.status, 'idle');
+  assert.equal(after.checks, 29); // the late result never applied
+  assert.equal(after.history.length, 29);
+  assert.equal(after.lastSession.verifiedSeconds, 285);
+});
+
+test('stopping during the completion grace still records a completed session', async () => {
+  const pending = deferred();
+  let calls = 0;
+  const { controller, clock } = harness({ check: () => {
+    calls += 1;
+    if (calls === 1) return Promise.resolve(result({ countedSeconds: 5 }));
+    if (calls === 30) return pending.promise;
+    return Promise.resolve(result({ countedSeconds: 10 }));
+  } });
+  controller.start({ ...OPTIONS, plannedMinutes: 5 });
+  await clock.tick(295_000);
+  await clock.tick(5_000); // t=300 s: completion fires, grace begins
+  const state = controller.stop();
+  assert.equal(state.status, 'idle');
+  assert.equal(state.lastSession.completed, true);
+  assert.equal(state.lastSession.activeSeconds, 300);
+  pending.resolve(result({ countedSeconds: 10 }));
+  await flush();
+  assert.equal(controller.getState().checks, 29); // the aborted check never applies
+});
+
+test('entering error banks the active stretch; error time never counts', async () => {
+  const { controller, clock } = harness({ check: async () => { throw new Error('Offline'); } });
+  controller.start(OPTIONS);
+  await clock.tick(25_000); // three consecutive failures → error at t=25 s
+  const state = controller.getState();
+  assert.equal(state.status, 'error');
+  assert.equal(state.activeSeconds, 25);
+  assert.equal(state.activeSince, null);
+  await clock.tick(60_000); // time spent in error never counts
+  assert.equal(controller.getState().activeSeconds, 25);
+  controller.resume();
+  assert.equal(controller.getState().activeSince, new Date(85_000).toISOString());
+  controller.pause();
+  assert.equal(controller.getState().activeSeconds, 25);
+  assert.equal(controller.getState().activeSince, null);
+  const stopped = controller.stop();
+  assert.equal(stopped.lastSession.completed, false);
+  assert.equal(stopped.lastSession.activeSeconds, 25);
 });

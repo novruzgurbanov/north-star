@@ -17,7 +17,10 @@ type Goal = {
   createdAt: string;             // ISO
   milestones: Milestone[];       // sorted by order
   details: GoalDetail[];         // small facts recorded by the agent, sorted by createdAt
+  sessions: Session[];           // the 5 most recent focus sessions, newest first
 }
+type Session = { id: string; task: string; plannedMinutes: number; activeSeconds: number;
+  verifiedSeconds: number; drifts: number; headline: string; endedAt: string } // drifts = off_track checks in the session
 type User = { id: string; name: string; color: string; seeded: boolean }
 type Settings = {
   helpfulness: 'quiet' | 'balanced' | 'proactive'  // default 'balanced'
@@ -56,6 +59,8 @@ type AgentEvent =
 | POST | `/api/activity` | `{ userId, goalId?: string, onTask: boolean, minutes: number, source?: string }` | `{ goal, stats }` |
 | POST | `/api/users/:userId/active-goal` | `{ goalId }` | `{ ok, points: PointsRow \| null }`; shares that goal's title with the cosmos |
 | POST | `/api/focus/check` | `{ userId, goalId, screen, camera?, sinceSeconds }` (base64 JPEGs) | `{ verdict, confidence, reason, nudge, roast, notifyAbove, counted, countedSeconds, goal, stats, points }`; on track with confidence ≥ the `strictness` count threshold logs `sinceSeconds` locally and reports the interval to the points service |
+| POST | `/api/goals/:goalId/next-step` | `{ userId }` | `{ task, minutes, why, milestoneId }` — the one task (max 10 words, starts with a verb) to do right now; `minutes` is 15, 25, 50 or 90; `milestoneId` is the undone milestone it advances, if any; 404 for unknown user/goal |
+| POST | `/api/sessions/recap` | `{ userId, goalId, task (1–120 chars), plannedMinutes (5–180), activeSeconds, verifiedSeconds, completed, checks: { at, verdict, reason (≤200 chars) }[] }` (max 200 checks) | `{ session, headline, summary, driftNote, next: { task, minutes }, suggestMilestoneId }` — saves the session on the goal and writes an honest recap; `suggestMilestoneId` set only when verified time ≥ 70% of planned and the task clearly matches that still-undone milestone; the session is saved even when the AI call fails |
 | POST | `/api/transcribe` | raw 16 kHz mono Float32 PCM | `{ text, ms, seconds }` (local Whisper) |
 | GET | `/api/cosmos` | | `{ players: PointsRow[], offline }` from the shared points service |
 | GET | `/api/leaderboard` | | `{ rows: PointsRow[], offline }` from the shared points service |
@@ -67,6 +72,7 @@ type AgentEvent =
 - `/api/focus/check` returns `roast` too: one playful line teasing the off-track activity (PG, never about the person), non-empty only when `verdict` is `off_track` and the user's `roast` setting is not `off`.
 - `Settings` are per-user and applied by the server: `strictness` sets the focus-check count threshold (confidence ≥ relaxed 0.5 · normal 0.6 · strict 0.75) and `notifyAbove` in the response (relaxed 0.85 · normal 0.7 · strict 0.6) tells the desktop when to notify on off-track. `helpfulness` styles the capture/coach replies; `roast` `off` forces `roast` to `""`, `mild` keeps the gentle teasing, `spicy` makes it sharper (still PG). When `shareGoalTitle` turns false the points player's `goalTitle` is cleared immediately, and while it is false no goal title is ever sent to the points service.
 - `/api/activity` is the integration point for the camera/screen tracker. `onTask: false` minutes are stored but earn nothing. If `goalId` is missing, use the user's most recent goal.
+- Focus sessions are the core loop on ready goals: `/api/goals/:goalId/next-step` has the coach pick the next task (it sees the goal's milestones, subgoal/action details and the last 3 sessions, so it never repeats finished work); `/api/sessions/recap` ends a session, saves it on the goal (`Goal.sessions`, newest first, max 5) and returns the recap plus the next task. A session's `drifts` counts its `off_track` checks; `driftNote` names the drift pattern and is `""` when the user never drifted.
 
 `PointsRow` is the `Row` type in [POINTS.md](POINTS.md). Leaderboard points count only verified focus time; the local score below still drives star brightness.
 

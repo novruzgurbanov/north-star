@@ -4,7 +4,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import { dirname, join } from 'node:path';
 import { mkdirSync } from 'node:fs';
 import { randomUUID } from 'node:crypto';
-import { FocusController, validStart } from './focus.mjs';
+import { FocusController, validPlannedMinutes, validStart, validTask } from './focus.mjs';
 
 const ROOT = dirname(fileURLToPath(import.meta.url));
 function httpURL(value) {
@@ -206,6 +206,16 @@ function registerIPC() {
     ipcMain.handle(`focus:${action}`, (event, ...args) => {
       if (!trustedRenderer(event)) return undefined;
       if (!validate(args)) return focus.getState();
+      if (action === 'start') {
+        // Optional session fields are sanitized one by one (like configure):
+        // an invalid task or plannedMinutes is ignored, never blocks the start.
+        const [options] = args;
+        return focus.start({
+          userId: options.userId, goalId: options.goalId, goalTitle: options.goalTitle,
+          camera: options.camera, task: validTask(options.task),
+          plannedMinutes: validPlannedMinutes(options.plannedMinutes),
+        });
+      }
       return focus[methods[action] || action](...args);
     });
   }

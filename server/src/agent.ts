@@ -1,6 +1,6 @@
 import 'dotenv/config';
 import OpenAI from 'openai';
-import { DETAIL_KINDS, type ChatMessage, type DetailKind, type Goal, type NewGoal, type Settings, type Stats } from './types.js';
+import { DETAIL_KINDS, type ChatMessage, type DetailKind, type Goal, type Milestone, type NewGoal, type SessionCheck, type Settings, type Stats } from './types.js';
 
 const MODEL = process.env.CHAT_MODEL || 'zai-org/glm-5.3-flash';
 
@@ -475,4 +475,194 @@ export async function checkFocus(goal: Goal, screen: string, camera: string | nu
     }
   }
   return { verdict: 'uncertain', confidence: 0, reason: "Couldn't check this time.", nudge: '', roast: '' };
+}
+
+// ---------------------------------------------------------------------------
+// nextStep(goal, settings) -> the ONE task to do right now (../SESSIONS.md)
+// ---------------------------------------------------------------------------
+
+// Verbatim system prompt from the brief, with {GOAL_JSON} filled in at call time.
+const NEXT_STEP_SYSTEM = `You are North Star, a practical coach. Pick the ONE best thing for the user to do right now toward their goal.
+Goal (JSON): {GOAL_JSON}
+Prefer the first undone milestone; break it into a concrete task that fits one focus session. Use their listed actions when one fits. Never repeat a task from their recent sessions unless it was clearly unfinished.
+Respond with ONLY a JSON object:
+{"task": string (max 10 words, starts with a verb), "minutes": 15 | 25 | 50 | 90, "why": string (one short sentence), "milestoneId": string | null}`;
+
+// Verbatim system prompt from the brief, with {GOAL_JSON} and {SESSION_JSON} filled in at call time.
+const RECAP_SYSTEM = `You are North Star, an honest, warm coach. A focus session just ended. Recap it from the data only; never invent progress.
+Goal (JSON): {GOAL_JSON}
+Session (JSON): {SESSION_JSON}
+- headline: max 8 words, specific to what happened.
+- summary: 1-2 sentences in second person. Credit the verified minutes; if verified time is low, say so kindly and plainly.
+- driftNote: if there were off_track checks, one sentence naming the pattern from their reasons (e.g. "You drifted to YouTube twice, both in the second half."); else "".
+- next: the next concrete task (max 10 words, starts with a verb) and minutes (15, 25, 50 or 90).
+- suggestMilestoneId: the id of the milestone this session completed, only if verified time is at least 70% of planned AND the task clearly matches that milestone; otherwise null.
+Respond with ONLY a JSON object:
+{"headline": string, "summary": string, "driftNote": string, "next": {"task": string, "minutes": number}, "suggestMilestoneId": string | null}`;
+
+/** Allowed focus lengths (../SESSIONS.md). */
+const STEP_MINUTES = [15, 25, 50, 90];
+
+/** Snap a duration to the nearest allowed focus length, falling back to 25. */
+function snapMinutes(raw: unknown, fallback = 25): number {
+  const n = Number(raw);
+  if (!Number.isFinite(n) || n <= 0) return fallback;
+  let best = STEP_MINUTES[0];
+  for (const m of STEP_MINUTES) {
+    if (Math.abs(n - m) < Math.abs(n - best)) best = m;
+  }
+  return best;
+}
+
+const oneDecimal = (n: number): number => Math.round(n * 10) / 10;
+
+/** First milestone that is not done yet, in goal order. */
+function firstUndoneMilestone(goal: Goal): Milestone | null {
+  return goal.milestones.find((m) => !m.done) ?? null;
+}
+
+/** The goal's milestone with this id, only when it is still undone. */
+function undoneMilestoneById(goal: Goal, rawId: unknown): Milestone | null {
+  if (typeof rawId !== 'string') return null;
+  const id = rawId.trim();
+  if (!id) return null;
+  return goal.milestones.find((m) => m.id === id && !m.done) ?? null;
+}
+
+/**
+ * Goal JSON for the session prompts: milestones (id, title, done), the subgoal/action
+ * details, and the last 3 sessions (task, verified minutes) so nothing gets repeated.
+ */
+function sessionsGoalJson(goal: Goal): string {
+  return JSON.stringify({
+    id: goal.id,
+    title: goal.title,
+    status: goal.status,
+    milestones: goal.milestones.map((m) => ({ id: m.id, title: m.title, done: m.done })),
+    details: goal.details
+      .filter((d) => d.kind === 'subgoal' || d.kind === 'action')
+      .map((d) => ({ kind: d.kind, text: d.text })),
+    recentSessions: goal.sessions.slice(0, 3).map((s) => ({
+      task: s.task,
+      verifiedMinutes: oneDecimal(s.verifiedSeconds / 60),
+    })),
+  });
+}
+
+export interface NextStepResult {
+  task: string;
+  minutes: number; // one of 15 | 25 | 50 | 90
+  why: string;
+  milestoneId: string | null;
+}
+
+/** Safe fallback when the AI call fails: the first undone milestone (or the goal itself), 25 minutes. */
+function fallbackStep(goal: Goal): NextStepResult {
+  const undone = firstUndoneMilestone(goal);
+  return {
+    task: undone ? undone.title : `Spend time on ${goal.title}`,
+    minutes: 25,
+    why: '',
+    milestoneId: undone?.id ?? null,
+  };
+}
+
+export async function nextStep(goal: Goal, settings: Settings): Promise<NextStepResult> {
+  const fallback = fallbackStep(goal);
+  const goalJson = sessionsGoalJson(goal);
+  const system = withHelpfulness(NEXT_STEP_SYSTEM.replace('{GOAL_JSON}', () => goalJson), settings);
+  const parsed = await chatJson(system, [{ role: 'user', content: 'What should I do right now?' }]);
+  if (!parsed) return fallback;
+  const milestone = undoneMilestoneById(goal, parsed.milestoneId);
+  return {
+    task: capWords(String(parsed.task ?? '').trim(), 10, 120) || fallback.task,
+    minutes: snapMinutes(parsed.minutes),
+    why: String(parsed.why ?? '').trim().slice(0, 200),
+    milestoneId: milestone?.id ?? null,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// recapSession(goal, input, settings) -> honest recap + next task (../SESSIONS.md)
+// ---------------------------------------------------------------------------
+
+export interface RecapInput {
+  task: string;
+  plannedMinutes: number;
+  activeSeconds: number;
+  verifiedSeconds: number;
+  completed: boolean;
+  checks: SessionCheck[];
+}
+
+export interface RecapResult {
+  headline: string;
+  summary: string;
+  driftNote: string;
+  next: { task: string; minutes: number };
+  suggestMilestoneId: string | null;
+}
+
+const MAX_PROMPT_CHECKS = 40;
+
+/** verdict + reason only; more than 40 checks are sampled evenly across the session. */
+function sampleChecks(checks: SessionCheck[]): Array<{ verdict: string; reason: string }> {
+  if (checks.length === 0) return [];
+  const pick = (c: SessionCheck) => ({ verdict: c.verdict, reason: c.reason });
+  if (checks.length <= MAX_PROMPT_CHECKS) return checks.map(pick);
+  const out: Array<{ verdict: string; reason: string }> = [];
+  for (let i = 0; i < MAX_PROMPT_CHECKS; i++) {
+    out.push(pick(checks[Math.round((i * (checks.length - 1)) / (MAX_PROMPT_CHECKS - 1))]));
+  }
+  return out;
+}
+
+/** Numbers-only recap so the session still gets a useful payload when the AI call fails. */
+function fallbackRecap(goal: Goal, input: RecapInput, drifts: number): RecapResult {
+  const step = fallbackStep(goal);
+  const verifiedMinutes = oneDecimal(input.verifiedSeconds / 60);
+  const driftSentence = drifts > 0 ? ` You drifted off track ${drifts} ${drifts === 1 ? 'time' : 'times'}.` : '';
+  return {
+    headline: 'Session saved',
+    summary: `You focused ${verifiedMinutes} of ${input.plannedMinutes} planned minutes.${driftSentence}`,
+    driftNote: driftSentence.trim(),
+    next: { task: step.task, minutes: step.minutes },
+    suggestMilestoneId: null,
+  };
+}
+
+export async function recapSession(goal: Goal, input: RecapInput, settings: Settings): Promise<RecapResult> {
+  const drifts = input.checks.filter((c) => c.verdict === 'off_track').length;
+  const fallback = fallbackRecap(goal, input, drifts);
+  const goalJson = sessionsGoalJson(goal);
+  const sessionJson = JSON.stringify({
+    task: input.task,
+    plannedMinutes: input.plannedMinutes,
+    activeMinutes: oneDecimal(input.activeSeconds / 60),
+    verifiedMinutes: oneDecimal(input.verifiedSeconds / 60),
+    completed: input.completed,
+    checks: sampleChecks(input.checks),
+  });
+  const system = withHelpfulness(
+    RECAP_SYSTEM.replace('{GOAL_JSON}', () => goalJson).replace('{SESSION_JSON}', () => sessionJson),
+    settings
+  );
+  const parsed = await chatJson(system, [{ role: 'user', content: 'Recap my focus session.' }]);
+  if (!parsed) return fallback;
+
+  const nextRaw =
+    parsed.next && typeof parsed.next === 'object' && !Array.isArray(parsed.next)
+      ? (parsed.next as Record<string, unknown>)
+      : {};
+  const milestone = undoneMilestoneById(goal, parsed.suggestMilestoneId);
+  return {
+    headline: capWords(String(parsed.headline ?? '').trim(), 8, 80) || fallback.headline,
+    summary: String(parsed.summary ?? '').trim().slice(0, 400) || fallback.summary,
+    driftNote: String(parsed.driftNote ?? '').trim().slice(0, 200),
+    next: {
+      task: capWords(String(nextRaw.task ?? '').trim(), 10, 120) || fallback.next.task,
+      minutes: snapMinutes(nextRaw.minutes),
+    },
+    suggestMilestoneId: milestone?.id ?? null,
+  };
 }

@@ -3,7 +3,7 @@ import cors from 'cors';
 import express, { type NextFunction, type Request, type Response } from 'express';
 import { z } from 'zod';
 import { initConstraints, run } from './db.js';
-import { capture, checkFocus, coach, type CoachAction } from './agent.js';
+import { capture, checkFocus, coach, nextStep, recapSession, type CoachAction } from './agent.js';
 import * as points from './points.js';
 import { nanoid } from 'nanoid';
 import * as model from './model.js';
@@ -82,6 +82,33 @@ const focusSchema = z.object({
   screen: z.string().min(100).max(6_000_000),
   camera: z.string().min(100).max(2_000_000).nullable().optional(),
   sinceSeconds: z.number().finite().min(1).max(3600),
+});
+
+const nextStepSchema = z.object({
+  userId: z.string().min(1, 'userId is required'),
+});
+
+const recapSchema = z.object({
+  userId: z.string().min(1, 'userId is required'),
+  goalId: z.string().min(1, 'goalId is required'),
+  task: z.string().trim().min(1, 'task is required').max(120, 'task must be at most 120 chars'),
+  plannedMinutes: z
+    .number()
+    .int({ message: 'plannedMinutes must be an integer' })
+    .min(5, { message: 'plannedMinutes must be at least 5' })
+    .max(180, { message: 'plannedMinutes must be at most 180' }),
+  activeSeconds: z.number().min(0, { message: 'activeSeconds must be at least 0' }).finite(),
+  verifiedSeconds: z.number().min(0, { message: 'verifiedSeconds must be at least 0' }).finite(),
+  completed: z.boolean(),
+  checks: z
+    .array(
+      z.object({
+        at: z.string().min(1, 'at is required'),
+        verdict: z.enum(['on_track', 'off_track', 'uncertain']),
+        reason: z.string().max(200, 'reason must be at most 200 chars'),
+      })
+    )
+    .max(200, 'checks must hold at most 200 items'),
 });
 
 // ---------------------------------------------------------------------------
@@ -365,6 +392,46 @@ app.post('/api/focus/check', async (req: Request, res: Response) => {
     goal: fresh ?? goal,
     stats,
     points: row,
+  });
+});
+
+// Next up: the coach picks the ONE best task to do right now toward the goal (../SESSIONS.md).
+app.post('/api/goals/:goalId/next-step', async (req: Request, res: Response) => {
+  const { userId } = nextStepSchema.parse(req.body);
+  const { goalId } = req.params as Record<string, string>;
+  const user = await model.getUser(userId);
+  if (!user) throw new HttpError(404, 'user not found');
+  const goal = await model.getGoal(userId, goalId);
+  if (!goal) throw new HttpError(404, 'goal not found');
+  const settings = await model.getSettings(userId);
+  res.json(await nextStep(goal, settings));
+});
+
+// Recap: a focus session ends, the coach reads what happened and the session is saved on the goal.
+// The session is saved even when the AI call fails (safe headline/summary fallbacks in the agent).
+app.post('/api/sessions/recap', async (req: Request, res: Response) => {
+  const body = recapSchema.parse(req.body);
+  const user = await model.getUser(body.userId);
+  if (!user) throw new HttpError(404, 'user not found');
+  const goal = await model.getGoal(body.userId, body.goalId);
+  if (!goal) throw new HttpError(404, 'goal not found');
+  const settings = await model.getSettings(body.userId);
+  const recap = await recapSession(goal, body, settings);
+  const session = await model.saveSession(body.userId, body.goalId, {
+    task: body.task,
+    plannedMinutes: body.plannedMinutes,
+    activeSeconds: body.activeSeconds,
+    verifiedSeconds: body.verifiedSeconds,
+    drifts: body.checks.filter((c) => c.verdict === 'off_track').length,
+    headline: recap.headline,
+  });
+  res.json({
+    session,
+    headline: recap.headline,
+    summary: recap.summary,
+    driftNote: recap.driftNote,
+    next: recap.next,
+    suggestMilestoneId: recap.suggestMilestoneId,
   });
 });
 

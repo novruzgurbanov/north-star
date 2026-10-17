@@ -1,7 +1,7 @@
 import { nanoid } from 'nanoid';
 import { z } from 'zod';
 import { run, toNum } from './db.js';
-import { DEFAULT_SETTINGS, DETAIL_KINDS, type Goal, type GoalDetail, type DetailKind, type Milestone, type NewGoal, type Settings, type Stats, type User } from './types.js';
+import { DEFAULT_SETTINGS, DETAIL_KINDS, type Goal, type GoalDetail, type DetailKind, type Milestone, type NewGoal, type Session, type Settings, type Stats, type User } from './types.js';
 
 export const COLORS = ['#8ecbff', '#ffd59e', '#c9a7ff', '#9effd8', '#ff9ec4', '#fff3b0', '#a7c4ff', '#ffb38a'];
 
@@ -55,11 +55,25 @@ function mapDetail(d: Record<string, unknown>): GoalDetail {
   };
 }
 
+function mapSession(s: Record<string, unknown>): Session {
+  return {
+    id: String(s.id),
+    task: String(s.task ?? ''),
+    plannedMinutes: toNum(s.plannedMinutes),
+    activeSeconds: toNum(s.activeSeconds),
+    verifiedSeconds: toNum(s.verifiedSeconds),
+    drifts: toNum(s.drifts),
+    headline: String(s.headline ?? ''),
+    endedAt: String(s.endedAt ?? ''),
+  };
+}
+
 export function toGoal(
   g: Record<string, unknown>,
   milestones: Array<Record<string, unknown>>,
   focusMinutes: number,
-  details: Array<Record<string, unknown>> = []
+  details: Array<Record<string, unknown>> = [],
+  sessions: Array<Record<string, unknown>> = []
 ): Goal {
   const ms: Milestone[] = milestones
     .map((m) => ({
@@ -106,6 +120,10 @@ export function toGoal(
     details: details
       .map(mapDetail)
       .sort((a, b) => a.createdAt.localeCompare(b.createdAt) || a.id.localeCompare(b.id)),
+    sessions: sessions
+      .map(mapSession)
+      .sort((a, b) => b.endedAt.localeCompare(a.endedAt) || b.id.localeCompare(a.id))
+      .slice(0, 5), // the 5 most recent, newest first
   };
 }
 
@@ -255,10 +273,12 @@ export async function loadGoals(userId: string): Promise<Goal[]> {
      WITH g, collect(m {.*}) AS ms
      OPTIONAL MATCH (g)-[:HAS_DETAIL]->(d: NSDetail)
      WITH g, ms, collect(d {.*}) AS ds
+     OPTIONAL MATCH (g)-[:HAD_SESSION]->(s: NSSession)
+     WITH g, ms, ds, collect(s {.*}) AS ss
      OPTIONAL MATCH (a: NSActivity)-[:FOR]->(g)
      WHERE a.onTask = true
-     WITH g, ms, ds, coalesce(sum(a.minutes), 0) AS focus
-     RETURN g {.*} AS goal, ms, ds, focus
+     WITH g, ms, ds, ss, coalesce(sum(a.minutes), 0) AS focus
+     RETURN g {.*} AS goal, ms, ds, ss, focus
      ORDER BY g.createdAt`,
     { userId }
   );
@@ -267,7 +287,8 @@ export async function loadGoals(userId: string): Promise<Goal[]> {
       r.goal as Record<string, unknown>,
       (r.ms as Array<Record<string, unknown>>) ?? [],
       toNum(r.focus),
-      (r.ds as Array<Record<string, unknown>>) ?? []
+      (r.ds as Array<Record<string, unknown>>) ?? [],
+      (r.ss as Array<Record<string, unknown>>) ?? []
     )
   );
 }
@@ -279,10 +300,12 @@ export async function getGoal(userId: string, goalId: string): Promise<Goal | nu
      WITH g, collect(m {.*}) AS ms
      OPTIONAL MATCH (g)-[:HAS_DETAIL]->(d: NSDetail)
      WITH g, ms, collect(d {.*}) AS ds
+     OPTIONAL MATCH (g)-[:HAD_SESSION]->(s: NSSession)
+     WITH g, ms, ds, collect(s {.*}) AS ss
      OPTIONAL MATCH (a: NSActivity)-[:FOR]->(g)
      WHERE a.onTask = true
-     WITH g, ms, ds, coalesce(sum(a.minutes), 0) AS focus
-     RETURN g {.*} AS goal, ms, ds, focus`,
+     WITH g, ms, ds, ss, coalesce(sum(a.minutes), 0) AS focus
+     RETURN g {.*} AS goal, ms, ds, ss, focus`,
     { userId, goalId }
   );
   if (rows.length === 0) return null;
@@ -290,7 +313,8 @@ export async function getGoal(userId: string, goalId: string): Promise<Goal | nu
     rows[0].goal as Record<string, unknown>,
     (rows[0].ms as Array<Record<string, unknown>>) ?? [],
     toNum(rows[0].focus),
-    (rows[0].ds as Array<Record<string, unknown>>) ?? []
+    (rows[0].ds as Array<Record<string, unknown>>) ?? [],
+    (rows[0].ss as Array<Record<string, unknown>>) ?? []
   );
 }
 
@@ -513,6 +537,39 @@ export async function logActivity(input: ActivityInput): Promise<void> {
 }
 
 // ---------------------------------------------------------------------------
+// Focus sessions (../SESSIONS.md)
+// ---------------------------------------------------------------------------
+
+export interface SessionInput {
+  task: string;
+  plannedMinutes: number;
+  activeSeconds: number;
+  verifiedSeconds: number;
+  drifts: number;
+  headline: string;
+}
+
+/** Save one focus session on the user's goal; returns the fresh Session, or null when the goal is not theirs. */
+export async function saveSession(
+  userId: string,
+  goalId: string,
+  data: SessionInput
+): Promise<Session | null> {
+  const rows = await run(
+    `MATCH (:NSUser {id: $userId})-[:PURSUES]->(g: NSGoal {id: $goalId})
+     CREATE (s: NSSession {
+       id: $id, task: $task, plannedMinutes: $plannedMinutes, activeSeconds: $activeSeconds,
+       verifiedSeconds: $verifiedSeconds, drifts: $drifts, headline: $headline, endedAt: $endedAt
+     })
+     CREATE (g)-[:HAD_SESSION]->(s)
+     RETURN s {.*} AS session`,
+    { userId, goalId, id: newId(), ...data, endedAt: nowIso() }
+  );
+  if (rows.length === 0) return null;
+  return mapSession(rows[0].session as Record<string, unknown>);
+}
+
+// ---------------------------------------------------------------------------
 // Stats (all computed on read)
 // ---------------------------------------------------------------------------
 
@@ -596,6 +653,12 @@ export async function deleteUserCascade(userIds: string[]): Promise<void> {
     `UNWIND $userIds AS uid
      MATCH (:NSUser {id: uid})-[:PURSUES]->(g: NSGoal)-[:HAS_MILESTONE]->(m: NSMilestone)
      DETACH DELETE m`,
+    { userIds }
+  );
+  await run(
+    `UNWIND $userIds AS uid
+     MATCH (:NSUser {id: uid})-[:PURSUES]->(g: NSGoal)-[:HAD_SESSION]->(s: NSSession)
+     DETACH DELETE s`,
     { userIds }
   );
   await run(

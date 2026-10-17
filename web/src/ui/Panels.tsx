@@ -40,8 +40,9 @@ export function TopBar({ user, stats, points, view, onView, onMenu }: {
   )
 }
 
-export function Leaderboard({ rows, meId, offline, mode, onMode }: {
+export function Leaderboard({ rows, meId, offline, mode, onMode, onPick }: {
   rows: PointsRow[]; meId?: string | null; offline: boolean; mode: 'real' | 'demo'; onMode: (m: 'real' | 'demo') => void
+  onPick: (playerId: string) => void
 }) {
   return (
     <aside className="panel glass leaderboard">
@@ -56,7 +57,8 @@ export function Leaderboard({ rows, meId, offline, mode, onMode }: {
       <p className="panel-why">One point per verified minute of focus, plus 25 for each day of your streak. Shared with every North Star and Goal Coach player.</p>
       <ol className="ranks">
         {rows.map(r => (
-          <li key={r.id} className={`rank ${r.id === meId ? 'is-me' : ''}`}>
+          <li key={r.id} className={`rank ${r.id === meId ? 'is-me' : ''}`} role="button" tabIndex={0}
+            onClick={() => onPick(r.id)} onKeyDown={e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onPick(r.id) } }}>
             <span className="rank-n mono">{r.rank}</span>
             <span className={`rank-dot ${r.live ? 'is-live' : ''}`} style={{ background: r.color, boxShadow: `0 0 10px ${r.color}` }} title={r.live ? 'Focusing right now' : undefined} />
             <span className="rank-who">

@@ -1,4 +1,4 @@
-import type { ChatMessage, ChatResponse, Goal, PointsRow, Settings, Stats, User } from './types'
+import type { ChatMessage, ChatResponse, Goal, NextStep, PointsRow, Recap, Settings, Stats, User } from './types'
 
 async function call<T>(path: string, body?: unknown): Promise<T> {
   const res = await fetch(`/api${path}`, {
@@ -41,5 +41,10 @@ export const api = {
     if (!res.ok) throw new Error((await res.text().catch(() => '')) || `${res.status}`)
     return res.json() as Promise<{ text: string; ms: number; seconds: number }>
   },
+  nextStep: (userId: string, goalId: string) => call<NextStep>(`/goals/${goalId}/next-step`, { userId }),
+  recap: (body: {
+    userId: string; goalId: string; task: string; plannedMinutes: number; activeSeconds: number
+    verifiedSeconds: number; completed: boolean; checks: { at: string; verdict: string; reason: string }[]
+  }) => call<Recap>('/sessions/recap', body),
   leaderboard: (mode: 'real' | 'demo' = 'real') => call<{ rows: PointsRow[]; offline: boolean }>(`/leaderboard?mode=${mode}`),
 }

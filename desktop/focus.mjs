@@ -1,4 +1,8 @@
 const FIRST_CHECK_MS = 5_000;
+// After the planned active time is reached, an already in-flight check may
+// still land and be counted for this long; later results are ignored.
+const COMPLETION_GRACE_MS = 5_000;
+const HISTORY_LIMIT = 200;
 
 function normalizeRoast(value) {
   return typeof value === 'string' && value.trim().length > 0
@@ -17,6 +21,18 @@ export function validStart(value) {
       typeof value[key] === 'string' && value[key].trim().length > 0
       && value[key].length <= (key === 'goalTitle' ? 500 : 200))
     && typeof value.camera === 'boolean';
+}
+
+// Optional session fields. Invalid values are ignored (null), so a malformed
+// task or duration from the caller never blocks a valid session from starting.
+export function validTask(value) {
+  if (typeof value !== 'string') return null;
+  const task = value.trim();
+  return task.length > 0 && task.length <= 120 ? task : null;
+}
+
+export function validPlannedMinutes(value) {
+  return Number.isInteger(value) && value >= 5 && value <= 180 ? value : null;
 }
 
 function validatedResult(result) {
@@ -47,13 +63,17 @@ export class FocusController {
       notificationsEnabled: true,
       sessionVerifiedSeconds: 0, checks: 0, cameraEnabled: false,
       cameraActive: false, lastCheck: null, lastResult: null, error: null,
-      notice: null,
+      notice: null, task: null, plannedMinutes: null,
+      activeSeconds: 0, activeSince: null, history: [], lastSession: null,
     };
     this.notifyCooldownMs = (Number.isFinite(notifyCooldownSeconds)
       ? Math.max(5, notifyCooldownSeconds) : 20) * 1_000;
     this.timer = null;
     this.timerArmedAt = null;
     this.timerFireAt = null;
+    this.completionTimer = null;
+    this.finalizeTimer = null;
+    this.completing = false;
     this.generation = 0;
     this.cameraGeneration = 0;
     this.inFlight = false;
@@ -79,6 +99,11 @@ export class FocusController {
     this.generation += 1;
     if (this.timer !== null) this.deps.clearTimer(this.timer);
     this.timer = null;
+    if (this.completionTimer !== null) this.deps.clearTimer(this.completionTimer);
+    this.completionTimer = null;
+    if (this.finalizeTimer !== null) this.deps.clearTimer(this.finalizeTimer);
+    this.finalizeTimer = null;
+    this.completing = false;
     this.waiting = false;
     this.state.nextCheckAt = null;
     this.abort?.abort();
@@ -107,6 +132,20 @@ export class FocusController {
     });
   }
 
+  // Active (not paused) time of this session: seconds banked before the
+  // current stretch plus the live stretch. Paused and error time never counts.
+  activeElapsedMs() {
+    const since = this.state.activeSince === null ? 0
+      : this.deps.now() - Date.parse(this.state.activeSince);
+    return this.state.activeSeconds * 1_000 + Math.max(0, since);
+  }
+
+  bankActive() {
+    if (this.state.activeSince === null) return;
+    this.state.activeSeconds = Math.round(this.activeElapsedMs()) / 1_000;
+    this.state.activeSince = null;
+  }
+
   start(options) {
     if (!validStart(options)) return this.getState();
     this.invalidate();
@@ -115,17 +154,23 @@ export class FocusController {
       goalTitle: options.goalTitle, startedAt: new Date(this.deps.now()).toISOString(),
       sessionVerifiedSeconds: 0, checks: 0, cameraEnabled: options.camera,
       cameraActive: false, lastCheck: null, lastResult: null, error: null,
+      task: validTask(options.task),
+      plannedMinutes: validPlannedMinutes(options.plannedMinutes),
+      activeSeconds: 0, activeSince: new Date(this.deps.now()).toISOString(),
+      history: [], lastSession: null,
     });
     this.failures = 0;
     this.previousAt = this.deps.now();
     this.syncCamera();
     this.schedule(FIRST_CHECK_MS);
+    this.armCompletion();
     return this.getState();
   }
 
   pause() {
     if (this.state.status === 'idle') return this.getState();
     this.invalidate();
+    this.bankActive();
     this.state.status = 'paused';
     this.state.error = null;
     this.syncCamera();
@@ -140,18 +185,78 @@ export class FocusController {
     this.state.error = null;
     this.previousAt = this.deps.now();
     this.failures = 0;
+    this.state.activeSince = new Date(this.deps.now()).toISOString();
     this.syncCamera();
     this.schedule(FIRST_CHECK_MS);
+    this.armCompletion();
     return this.getState();
   }
 
   stop() {
+    const timeWasUp = this.completing;
+    const hadSession = this.state.status !== 'idle';
     this.invalidate();
+    this.bankActive();
     this.state.status = 'idle';
     this.state.error = null;
     this.syncCamera();
+    if (hadSession) this.recordLastSession(timeWasUp);
     this.emit();
     return this.getState();
+  }
+
+  // Completion timer: fires once the planned active time has elapsed (re-armed
+  // on resume, canceled on pause/stop via invalidate).
+  armCompletion() {
+    if (this.completionTimer !== null) {
+      this.deps.clearTimer(this.completionTimer);
+      this.completionTimer = null;
+    }
+    if (this.state.plannedMinutes === null || this.state.status !== 'active') return;
+    const remainingMs = Math.max(0, this.state.plannedMinutes * 60_000 - this.activeElapsedMs());
+    this.completionTimer = this.deps.setTimer(() => {
+      this.completionTimer = null;
+      this.completeSession();
+    }, remainingMs);
+  }
+
+  completeSession() {
+    if (this.state.status !== 'active') return;
+    this.bankActive();
+    if (this.inFlight) {
+      // Give the in-flight check a short grace window to land and be included.
+      this.completing = true;
+      this.emit();
+      this.finalizeTimer = this.deps.setTimer(() => {
+        this.finalizeTimer = null;
+        if (!this.completing) return;
+        this.completing = false;
+        this.finishSession(true);
+      }, COMPLETION_GRACE_MS);
+      return;
+    }
+    this.finishSession(true);
+  }
+
+  // Ends the session exactly like stop() and preserves its record for the recap.
+  finishSession(completed) {
+    this.invalidate();
+    this.bankActive();
+    this.state.status = 'idle';
+    this.state.error = null;
+    this.syncCamera();
+    this.recordLastSession(completed);
+    this.emit();
+  }
+
+  recordLastSession(completed) {
+    this.state.lastSession = {
+      goalId: this.state.goalId, goalTitle: this.state.goalTitle, task: this.state.task,
+      plannedMinutes: this.state.plannedMinutes, activeSeconds: this.state.activeSeconds,
+      verifiedSeconds: this.state.sessionVerifiedSeconds,
+      history: [...this.state.history], completed,
+      endedAt: new Date(this.deps.now()).toISOString(),
+    };
   }
 
   setCamera(enabled) {
@@ -219,7 +324,10 @@ export class FocusController {
     if (this.inFlight) { this.waiting = true; return; }
     this.inFlight = true;
     const generation = this.generation;
-    const current = () => generation === this.generation && this.state.status === 'active';
+    // During the completion grace window the session is wrapping up but the
+    // in-flight check may still land and be included.
+    const current = () => generation === this.generation
+      && (this.state.status === 'active' || this.completing);
     this.abort = new AbortController();
     const signal = this.abort.signal;
     const started = this.deps.now();
@@ -261,12 +369,20 @@ export class FocusController {
       this.state.error = null;
       this.state.checks += 1;
       this.state.sessionVerifiedSeconds += result.countedSeconds;
+      const at = new Date(this.deps.now()).toISOString();
       this.state.lastCheck = {
-        at: new Date(this.deps.now()).toISOString(), verdict: result.verdict,
+        at, verdict: result.verdict,
         confidence: result.confidence, reason: result.reason, nudge: result.nudge,
         roast: normalizeRoast(result.roast),
         counted: result.counted, countedSeconds: result.countedSeconds,
       };
+      this.state.history.push({
+        at, verdict: result.verdict, confidence: result.confidence,
+        reason: result.reason, counted: result.counted, countedSeconds: result.countedSeconds,
+      });
+      if (this.state.history.length > HISTORY_LIMIT) {
+        this.state.history.splice(0, this.state.history.length - HISTORY_LIMIT);
+      }
       this.state.lastResult = {
         goal: result.goal ?? null, stats: result.stats ?? null, points: result.points ?? null,
       };
@@ -286,6 +402,7 @@ export class FocusController {
       this.deps.log('uncertain 0.00 0s (failed)');
       this.state.error = failureMessage;
       if (this.failures >= 3) {
+        this.bankActive();
         this.state.status = 'error';
         this.syncCamera();
       }
@@ -293,7 +410,10 @@ export class FocusController {
     } finally {
       this.inFlight = false;
       this.abort = null;
-      if (current()) this.schedule(this.state.checkSeconds * 1_000);
+      if (this.completing && generation === this.generation) {
+        // Time was up while this check ran; it is included, then the session ends.
+        this.finishSession(true);
+      } else if (current()) this.schedule(this.state.checkSeconds * 1_000);
       else if (this.state.status === 'active' && this.waiting) {
         this.waiting = false;
         this.schedule(0);

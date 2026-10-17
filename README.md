@@ -1,6 +1,14 @@
 # North Star
 
-Write down what you want to reach and it appears as a little star. Add details whenever you like and it grows into a constellation. While you work, the desktop app glances at your screen (and, if you allow it, your camera) to check that you're on task, and roasts you a little when you drift. Verified minutes brighten your stars and earn points on a shared leaderboard. Open the Cosmos to see everyone who is working on their goals right now.
+Write down what you want to reach and it appears as a little star. Add details whenever you like and it grows into a constellation.
+
+Then North Star runs one simple loop on every star:
+
+1. **Next up**: the AI proposes one concrete task for right now, with a duration.
+2. **Focus**: a timed session on that task. The desktop app checks your screen (and, if you allow it, your camera) to verify you're on it, and roasts you a little when you drift.
+3. **Recap**: the AI reads what actually happened (verified minutes, when and why you drifted), writes an honest recap, offers to light the milestone you finished, and proposes the next task.
+
+Verified minutes brighten your stars and earn points on a shared leaderboard. Open the Cosmos to see everyone working on their goals right now, and click any constellation to see what that person is working toward.
 
 ## Run it on one machine
 
@@ -68,11 +76,11 @@ The left bar's **Settings** page controls how the agent helps (Quiet · Balanced
 | Part | Folder | What it does |
 |---|---|---|
 | Web UI | `web/` | Vite + React + three.js cosmos; glass chat with voice and suggested answers; left bar with Brainstorm, Stars and Settings |
-| API | `server/` | Goals, milestones and details in Neo4j (`NS*` labels); the capturing and coaching agent on ai&'s strongest model (`moonshotai/kimi-k3`) and the screen-check judge on the fast `zai-org/glm-5.3-flash` (Kimi K3 takes ~30 s per image, too slow for 20 s checks; change `VISION_MODEL` to switch); local Whisper for voice |
+| API | `server/` | Goals, milestones and details in Neo4j (`NS*` labels); the capturing and coaching agent, next-step planner, session recaps and screen-check judge on ai& (`zai-org/glm-5.3-flash`; set `CHAT_MODEL=moonshotai/kimi-k3` for ai&'s strongest model, ~10x slower); local Whisper for voice |
 | Desktop | `desktop/` | Electron shell for Windows; while you focus it captures the screen (and an optional webcam frame) in memory every 20 s by default and sends it to `POST /api/focus/check`; roast notifications |
 | Points | `points/` | Shared multiplayer service: players, verified focus intervals, points and leaderboard (`PS*` labels), with Real and Demo modes |
 
-Contracts: [CONTRACT.md](CONTRACT.md) (API), [DESKTOP.md](DESKTOP.md) (desktop bridge), [POINTS.md](POINTS.md) (points service), [SETTINGS.md](SETTINGS.md) (settings).
+Contracts: [CONTRACT.md](CONTRACT.md) (API), [SESSIONS.md](SESSIONS.md) (focus sessions and recaps), [DESKTOP.md](DESKTOP.md) (desktop bridge), [POINTS.md](POINTS.md) (points service), [SETTINGS.md](SETTINGS.md) (settings).
 
 ## Voice
 

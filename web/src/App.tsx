@@ -1,14 +1,15 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { api } from './api'
 import { sound } from './sound'
-import { DEFAULT_SETTINGS, type ChatMessage, type FocusState, type Goal, type PointsRow, type Settings, type Stats, type User } from './types'
+import { DEFAULT_SETTINGS, type ChatMessage, type FocusState, type Goal, type NextStep, type PointsRow, type Recap, type Settings, type Stats, type User } from './types'
 import { Universe } from './scene/Universe'
 import { Sidebar, type View } from './ui/Sidebar'
 import { SettingsView } from './ui/SettingsView'
 import { ChatDock } from './ui/ChatDock'
 import { Leaderboard, Onboarding, TopBar } from './ui/Panels'
 import { GoalPanel } from './ui/GoalPanel'
-import { FocusCard } from './ui/FocusCard'
+import { SessionDock } from './ui/SessionDock'
+import { PlayerCard } from './ui/PlayerCard'
 
 const desktop = typeof window !== 'undefined' ? window.northStarDesktop : undefined
 
@@ -57,6 +58,11 @@ export default function App() {
   const pendingSettings = useRef<Partial<Settings>>({})
   const [bornAt, setBornAt] = useState<Record<string, number>>({})
   const [toasts, setToasts] = useState<Toast[]>([])
+  const [nextSteps, setNextSteps] = useState<Record<string, NextStep | 'loading'>>({})
+  const [recaps, setRecaps] = useState<Record<string, Recap | 'loading' | null>>({})
+  const [panelHidden, setPanelHidden] = useState(false)
+  const [player, setPlayer] = useState<PointsRow | null>(null)
+  const lastSessionEnd = useRef<string | null>(null)
   const [suggestions, setSuggestions] = useState<Record<string, string[]>>({})
   const busyRef = useRef(false)
 
@@ -134,6 +140,11 @@ export default function App() {
     void desktop.focus.getState().then(setFocus).catch(() => {})
     return desktop.focus.onState(state => {
       setFocus(state)
+      const ended = state.lastSession
+      if (ended && ended.endedAt !== lastSessionEnd.current) {
+        lastSessionEnd.current = ended.endedAt
+        recapRef.current(ended)
+      }
       const check = state.lastCheck
       if (!check || check.at === lastCheckAt.current) return
       lastCheckAt.current = check.at
@@ -258,26 +269,35 @@ export default function App() {
     }
   }
 
-  const focusControls = (goal: Goal) => (
-    <FocusCard
+  const startSession = (goal: Goal, task: string, minutes: number) => {
+    if (!user || !desktop) return
+    sound.unlock()
+    setRecaps(r => ({ ...r, [goal.id]: null }))
+    void desktop.focus.start({ userId: user.id, goalId: goal.id, goalTitle: goal.title, camera: useCamera, task, plannedMinutes: minutes })
+      .then(setFocus)
+      .catch(() => toast('Could not start the focus session.'))
+  }
+
+  const sessionDock = (goal: Goal) => (
+    <SessionDock
+      goal={goal}
       focus={focus}
-      goalId={goal.id}
       desktop={!!desktop}
       camera={focus?.status && focus.status !== 'idle' ? focus.cameraEnabled : useCamera}
+      next={nextSteps[goal.id] ?? null}
+      recap={recaps[goal.id] ?? null}
       onCamera={enabled => {
         setUseCamera(enabled)
         if (focus && focus.status !== 'idle') void desktop?.focus.setCamera(enabled).then(setFocus)
       }}
-      onStart={() => {
-        if (!user || !desktop) return
-        sound.unlock()
-        void desktop.focus.start({ userId: user.id, goalId: goal.id, goalTitle: goal.title, camera: useCamera })
-          .then(setFocus)
-          .catch(() => toast('Could not start focus checks.'))
-      }}
+      onStart={(task, minutes) => startSession(goal, task, minutes)}
       onPause={() => void desktop?.focus.pause().then(setFocus)}
       onResume={() => void desktop?.focus.resume().then(setFocus)}
       onStop={() => void desktop?.focus.stop().then(setFocus)}
+      onRefreshNext={() => fetchNext(goal.id, true)}
+      onAsk={text => { if (!busy) void send(text) }}
+      onLightMilestone={id => { void toggleMilestone(id); setRecaps(r => ({ ...r, [goal.id]: null })); fetchNext(goal.id, true) }}
+      onDismissRecap={() => { setRecaps(r => ({ ...r, [goal.id]: null })); fetchNext(goal.id, true) }}
     />
   )
 
@@ -312,6 +332,42 @@ export default function App() {
       .then(setFocus).catch(() => {})
   }, [settings.checkSeconds, settings.notifications])
 
+  const fetchNext = (goalId: string, force = false) => {
+    if (!user) return
+    if (!force && nextSteps[goalId]) return
+    setNextSteps(n => ({ ...n, [goalId]: 'loading' }))
+    api.nextStep(user.id, goalId)
+      .then(step => setNextSteps(n => ({ ...n, [goalId]: step })))
+      .catch(() => setNextSteps(n => { const copy = { ...n }; delete copy[goalId]; return copy }))
+  }
+
+  function requestRecap(ended: NonNullable<FocusState['lastSession']>) {
+    if (!user || !ended.goalId) return
+    const goalId = ended.goalId
+    setRecaps(r => ({ ...r, [goalId]: 'loading' }))
+    sound.twinkle(3, true)
+    api.recap({
+      userId: user.id, goalId, task: ended.task || ended.goalTitle, plannedMinutes: ended.plannedMinutes ?? 25,
+      activeSeconds: Math.round(ended.activeSeconds), verifiedSeconds: Math.round(ended.verifiedSeconds), completed: ended.completed,
+      checks: (ended.history ?? []).slice(-200).map(c => ({ at: c.at, verdict: c.verdict, reason: (c.reason || '').slice(0, 200) })),
+    })
+      .then(recap => {
+        setRecaps(r => ({ ...r, [goalId]: recap }))
+        if (user) api.getUser(user.id).then(res => { applyGoals(res.goals); setStats(res.stats) }).catch(() => {})
+      })
+      .catch(() => { setRecaps(r => ({ ...r, [goalId]: null })); toast('Session saved, but the recap could not be written.') })
+  }
+
+  const recapRef = useRef(requestRecap)
+  recapRef.current = requestRecap
+
+  // Suggest the next task as soon as a ready star is open and nothing is running on it.
+  useEffect(() => {
+    if (!selectedGoal || selectedGoal.status === 'brainstorm' || discovering) return
+    if (focus && focus.status !== 'idle' && focus.goalId === selectedGoal.id) return
+    fetchNext(selectedGoal.id)
+  }, [selectedGoal?.id, selectedGoal?.status]) // eslint-disable-line react-hooks/exhaustive-deps
+
   const startNewStar = () => {
     setSelected(null)
     setForgeIndex(goals.length)
@@ -329,7 +385,7 @@ export default function App() {
   const color = user?.color ?? '#cfe2ff'
 
   return (
-    <div className={`app view-${view} ${user ? 'has-nav' : ''} ${view === 'sky' && selectedGoal && !discovering ? 'has-panel' : ''} ${desktop ? 'is-desktop' : ''} ${navCollapsed ? 'nav-collapsed' : ''}`} style={{ ['--me' as string]: color }}>
+    <div className={`app view-${view} ${user ? 'has-nav' : ''} ${view === 'sky' && selectedGoal && !discovering && !panelHidden ? 'has-panel' : ''} ${desktop ? 'is-desktop' : ''} ${navCollapsed ? 'nav-collapsed' : ''}`} style={{ ['--me' as string]: color }}>
       <Universe
         me={user}
         myGoals={goals}
@@ -342,6 +398,7 @@ export default function App() {
         others={others}
         myScore={myRow?.points ?? stats.score}
         focusing={focusingGoal}
+        onPickPlayer={id => setPlayer(others.find(r => r.id === id) ?? null)}
       />
 
       <TopBar user={user} stats={stats} points={myRow ?? null} view={view} onView={v => { sound.unlock(); setView(v) }} onMenu={() => setNavOpen(true)} />
@@ -350,13 +407,18 @@ export default function App() {
         <Sidebar user={user} goals={goals} selected={selected} discovering={discovering} focusingGoalId={focusingGoal}
           view={view} stats={stats} points={myRow ?? null} open={navOpen}
           collapsed={navCollapsed} onCollapse={() => setNavCollapsed(c => !c)}
-          onSelect={id => { setSelected(id); setView('sky') }} onNew={startNewStar}
+          onSelect={id => {
+            // Pressing the open goal again hides its panel; any other goal opens it.
+            if (id === selected && view === 'sky' && !discovering) setPanelHidden(h => !h)
+            else { setSelected(id); setPanelHidden(false) }
+            setView('sky')
+          }} onNew={startNewStar}
           onView={v => { sound.unlock(); setView(v) }} onClose={() => setNavOpen(false)} />
       )}
 
-      {user && view === 'sky' && selectedGoal && !discovering && (
+      {user && view === 'sky' && selectedGoal && !discovering && !panelHidden && (
         <div className="left-column">
-          <GoalPanel key={selectedGoal.id} goal={selectedGoal} color={color} onToggle={toggleMilestone} focus={focusControls(selectedGoal)}
+          <GoalPanel key={selectedGoal.id} goal={selectedGoal} color={color} onToggle={toggleMilestone} dock={sessionDock(selectedGoal)}
             focusing={focusingGoal === selectedGoal.id} onAsk={text => { if (!busy) void send(text) }} />
         </div>
       )}
@@ -367,7 +429,9 @@ export default function App() {
 
       {user && view === 'cosmos' && (
         <>
-          <Leaderboard rows={leaders} meId={meId} offline={pointsOffline} mode={cosmosMode} onMode={setCosmosMode} />
+          <Leaderboard rows={leaders} meId={meId} offline={pointsOffline} mode={cosmosMode} onMode={setCosmosMode}
+            onPick={id => setPlayer(leaders.find(r => r.id === id) ?? null)} />
+          {player && <PlayerCard player={player} you={player.id === meId} onClose={() => setPlayer(null)} />}
           <p className="cosmos-caption">Every constellation is someone’s goal. It grows brighter with every verified minute they work on it.</p>
         </>
       )}
