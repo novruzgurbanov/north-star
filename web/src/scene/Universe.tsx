@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, type ReactNode } from 'react'
+import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { Canvas, useFrame, useThree, type ThreeEvent } from '@react-three/fiber'
 import { Line, Stars } from '@react-three/drei'
 import { Bloom, EffectComposer, Noise, Vignette } from '@react-three/postprocessing'
@@ -290,6 +290,9 @@ export function Universe({ me, myGoals, bornAt, focusGoalId, forgeIndex, discove
   myScore, focusing, frame, onPickGoal, onPickPlayer }: Props) {
   const labelEls = useRef(new Map<string, HTMLDivElement>())
   const labels: LabelSpec[] = []
+  // Focus mode keeps the sky quiet: only the next milestone is named; any other star shows its name on hover.
+  const [hovered, setHovered] = useState<string | null>(null)
+  const hoverTargets: { key: string; position: Vec3 }[] = []
   const color = me?.color ?? '#cfe2ff'
   const cosmos = view === 'cosmos'
   const focusIndex = focusGoalId ? myGoals.findIndex(g => g.id === focusGoalId) : -1
@@ -313,21 +316,28 @@ export function Universe({ me, myGoals, bornAt, focusGoalId, forgeIndex, discove
       title: 'Open this star', node: <span className="star-label-goal-title">{g.title}</span>,
     }))
   }
-  // Focus mode: name every star so the constellation explains itself.
   if (!cosmos && focusGoal && !discovering) {
     const origin = myGoalOrigin(focusIndex)
     const scale = focusGoal.status === 'brainstorm' ? 0.8 : 1
     const ms = [...focusGoal.milestones].sort((a, b) => a.order - b.order)
+    const nextId = ms.find(m => !m.done)?.id
     const mPos = milestonePositions(focusGoal.id, ms.length)
-    ms.forEach((m, i) => labels.push({
-      key: `m:${m.id}`, position: add(origin, [mPos[i][0] * scale, mPos[i][1] * scale - 0.85, mPos[i][2] * scale]), visible: true,
-      node: <span className={`sky-tag ${m.done ? 'is-done' : ''}`}>{m.title}</span>,
-    }))
+    ms.forEach((m, i) => {
+      const key = `m:${m.id}`
+      const star = add(origin, [mPos[i][0] * scale, mPos[i][1] * scale, mPos[i][2] * scale])
+      hoverTargets.push({ key, position: star })
+      labels.push({
+        key, position: add(star, [0, -0.85, 0]), visible: key === hovered || m.id === nextId,
+        node: <span className={`sky-tag ${m.done ? 'is-done' : ''} ${m.id === nextId ? 'is-next' : ''}`}>{m.id === nextId ? 'Next · ' : ''}{m.title}</span>,
+      })
+    })
     const details = focusGoal.details ?? []
     details.forEach((d, i) => {
-      const p = detailPosition(i, details.length, scale)
+      const key = `d:${d.id}`
+      const star = add(origin, detailPosition(i, details.length, scale))
+      hoverTargets.push({ key, position: star })
       labels.push({
-        key: `d:${d.id}`, position: add(origin, [p[0], p[1] - 0.6, p[2]]), visible: true,
+        key, position: add(star, [0, -0.6, 0]), visible: key === hovered,
         node: <span className="sky-tag is-detail" style={{ ['--tint' as string]: DETAIL_TINT[d.kind] ?? color }}>{DETAIL_WORD[d.kind]} · {d.text}</span>,
       })
     })
@@ -404,6 +414,14 @@ export function Universe({ me, myGoals, bornAt, focusGoalId, forgeIndex, discove
         )
       })}
 
+      {hoverTargets.map(t => (
+        <mesh key={t.key} position={t.position}
+          onPointerOver={e => { e.stopPropagation(); setHovered(t.key) }}
+          onPointerOut={() => setHovered(h => (h === t.key ? null : h))}>
+          <sphereGeometry args={[0.75, 8, 8]} />
+          <meshBasicMaterial transparent opacity={0} depthWrite={false} />
+        </mesh>
+      ))}
       <Projector specs={labels} els={labelEls} />
 
       <EffectComposer multisampling={0}>
