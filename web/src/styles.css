@@ -796,3 +796,18 @@ button:not(:disabled):active { transform: scale(0.97); transition: transform 90m
 .lg-small { width: 5px; height: 5px; margin-inline: 1px; }
 .lg-hint { color: var(--faint); }
 @media (max-width: 900px) { .sky-legend { display: none; } }
+
+/* Collapsible conversation: a glass arrow where the messages fade out */
+.chat-fold { display: grid; grid-template-rows: 1fr; transition: grid-template-rows .45s cubic-bezier(0.22, 1, 0.36, 1), opacity .3s var(--ease); }
+.chat-fold.is-folded { grid-template-rows: 0fr; opacity: 0; pointer-events: none; }
+.chat-fold-inner { min-height: 0; overflow: hidden; }
+.chat-toggle {
+  align-self: center; display: inline-flex; align-items: center; gap: 7px; margin-bottom: -6px; z-index: 1;
+  height: 28px; min-width: 28px; padding: 0 8px; justify-content: center; border-radius: 999px;
+  color: var(--muted); font-size: 12px; border: 1px solid var(--stroke);
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.07), rgba(255, 255, 255, 0.02)), rgba(12, 15, 28, 0.35);
+  backdrop-filter: blur(14px) saturate(150%); -webkit-backdrop-filter: blur(14px) saturate(150%);
+  opacity: 0.55; transition: opacity .25s var(--ease), color .25s var(--ease), border-color .25s var(--ease);
+}
+.chat-toggle:hover, .chat-toggle:focus-visible, .chat-toggle.is-folded { opacity: 1; color: var(--text); border-color: var(--stroke-strong); }
+.chat-toggle.is-folded { margin-bottom: 0; padding: 0 12px; }

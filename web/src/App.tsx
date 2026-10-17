@@ -61,6 +61,7 @@ export default function App() {
   const [nextSteps, setNextSteps] = useState<Record<string, NextStep | 'loading'>>({})
   const [recaps, setRecaps] = useState<Record<string, Recap | 'loading' | null>>({})
   const [panelHidden, setPanelHidden] = useState(true)
+  const [storedFor, setStoredFor] = useState<string | null>(null)
   const [viewport, setViewport] = useState(() => ({ w: window.innerWidth, h: window.innerHeight }))
   const [player, setPlayer] = useState<PointsRow | null>(null)
   const lastSessionEnd = useRef<string | null>(null)
@@ -80,6 +81,7 @@ export default function App() {
     if (!user) return
     setThreads(read(`ns.threads.${user.id}`, {}))
     setUnderstanding(read(`ns.understanding.${user.id}`, 0))
+    setStoredFor(user.id)
     api.getUser(user.id)
       .then(res => {
         const sorted = byCreated(res.goals)
@@ -102,8 +104,10 @@ export default function App() {
       .finally(() => setLoaded(true))
   }, [user?.id]) // eslint-disable-line react-hooks/exhaustive-deps
 
-  useEffect(() => { if (user) write(`ns.threads.${user.id}`, threads) }, [threads, user])
-  useEffect(() => { if (user) write(`ns.understanding.${user.id}`, understanding) }, [understanding, user])
+  // Save only after this user's saved chats have been loaded into state; otherwise the first render's
+  // empty state would overwrite them (React runs mount effects twice in development).
+  useEffect(() => { if (user && storedFor === user.id) write(`ns.threads.${user.id}`, threads) }, [threads, user, storedFor])
+  useEffect(() => { if (user && storedFor === user.id) write(`ns.understanding.${user.id}`, understanding) }, [understanding, user, storedFor])
 
   useEffect(() => { write('ns.camera', useCamera) }, [useCamera])
 
@@ -171,7 +175,10 @@ export default function App() {
 
   const discovering = loaded && selected === null
   const selectedGoal = goals.find(g => g.id === selected) ?? null
-  const threadKey = selected ?? NEW
+  // Overview (a goal exists but its panel is closed): the sky is clear and the input writes down a new star.
+  const overview = loaded && view === 'sky' && selected !== null && panelHidden
+  const chatGoalId = overview ? null : selected
+  const threadKey = chatGoalId ?? NEW
   const messages = threads[threadKey] ?? []
   const meId = user?.pointsPlayerId ?? myPoints?.id ?? null
   const myRow = leaders.find(r => r.id === meId) ?? myPoints
@@ -187,7 +194,7 @@ export default function App() {
     if (!user) return
     sound.unlock()
     const key = threadKey
-    const goalId = selected ?? undefined
+    const goalId = chatGoalId ?? undefined
     const msgs: ChatMessage[] = [...messages, { role: 'user', content: text }]
     setThread(key, msgs)
     setSuggestions(s => ({ ...s, [key]: [] }))
@@ -362,6 +369,10 @@ export default function App() {
   const recapRef = useRef(requestRecap)
   recapRef.current = requestRecap
 
+  useEffect(() => {
+    if (overview) { setThreads(t => (t[NEW]?.length ? { ...t, [NEW]: [] } : t)); setSuggestions(s => ({ ...s, [NEW]: [] })) }
+  }, [overview])
+
   // Suggest the next task as soon as a ready star is open and nothing is running on it.
   useEffect(() => {
     if (!selectedGoal || selectedGoal.status === 'brainstorm' || discovering) return
@@ -482,6 +493,7 @@ export default function App() {
           onError={toast}
           suggestions={settings.suggestions ? suggestions[threadKey] ?? [] : []}
           little={selectedGoal?.status === 'brainstorm'}
+          overview={overview}
         />
       )}
 

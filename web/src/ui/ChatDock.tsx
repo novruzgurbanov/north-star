@@ -15,6 +15,7 @@ type Props = {
   onError: (text: string) => void
   suggestions: string[]
   little?: boolean
+  overview?: boolean
 }
 
 type VoiceState = 'idle' | 'recording' | 'transcribing'
@@ -64,7 +65,22 @@ function Waveform({ recorder }: { recorder: Recorder }) {
   return <canvas ref={canvas} className="waveform" aria-hidden />
 }
 
-export function ChatDock({ messages, busy, discovering, hasGoals, goalTitle, onSend, onError, suggestions, little }: Props) {
+function readChatCollapsed() {
+  try { return localStorage.getItem('ns.chatCollapsed') === '1' } catch { return false }
+}
+
+const Chevron = ({ up }: { up: boolean }) => (
+  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"
+    aria-hidden style={{ transform: up ? 'rotate(180deg)' : 'none', transition: 'transform .35s cubic-bezier(0.22, 1, 0.36, 1)' }}>
+    <path d="M6 9l6 6 6-6" />
+  </svg>
+)
+
+export function ChatDock({ messages, busy, discovering, hasGoals, goalTitle, onSend, onError, suggestions, little, overview }: Props) {
+  const [collapsed, setCollapsed] = useState(readChatCollapsed)
+  useEffect(() => {
+    try { localStorage.setItem('ns.chatCollapsed', collapsed ? '1' : '0') } catch { /* storage unavailable */ }
+  }, [collapsed])
   const [text, setText] = useState('')
   const [voice, setVoice] = useState<VoiceState>('idle')
   const [seconds, setSeconds] = useState(0)
@@ -123,11 +139,17 @@ export function ChatDock({ messages, busy, discovering, hasGoals, goalTitle, onS
     return () => clearTimeout(id)
   }, [busy])
 
+  const canFold = messages.length >= 4
+  // Any message sent from elsewhere (e.g. the goal panel) unfolds the chat so the reply is visible.
+  useEffect(() => { if (busy) setCollapsed(false) }, [busy])
+  const folded = canFold && collapsed
+  const sendMessage = (value: string) => { setCollapsed(false); onSend(value) }
+
   const submit = () => {
     const value = text.trim()
     if (!value || busy) return
     setText('')
-    onSend(value)
+    sendMessage(value)
   }
 
   const startVoice = async () => {
@@ -165,7 +187,7 @@ export function ChatDock({ messages, busy, discovering, hasGoals, goalTitle, onS
       if (!value) {
         onError('I didn’t catch that. Try again a little closer to the mic.')
       } else if (send && !busy) {
-        onSend(text.trim() ? `${text.trim()} ${value}` : value)
+        sendMessage(text.trim() ? `${text.trim()} ${value}` : value)
         setText('')
       } else {
         setText(t => (t.trim() ? `${t.trim()} ${value}` : value))
@@ -180,7 +202,9 @@ export function ChatDock({ messages, busy, discovering, hasGoals, goalTitle, onS
 
   const placeholder = voice === 'transcribing'
     ? 'Listening back…'
-    : discovering
+    : overview
+      ? 'Write down a new goal, or pick a star to talk about it…'
+      : discovering
       ? 'I want to…  (or tap the mic and just talk)'
       : little ? 'Add a detail, or tell me what you did today…' : `What did you do for “${goalTitle ?? 'your star'}” today?`
 
@@ -195,7 +219,17 @@ export function ChatDock({ messages, busy, discovering, hasGoals, goalTitle, onS
         </div>
       )}
 
+      {canFold && (
+        <button type="button" className={`chat-toggle ${folded ? 'is-folded' : ''}`} onClick={() => setCollapsed(c => !c)}
+          aria-expanded={!folded} aria-label={folded ? 'Show the conversation' : 'Hide the conversation'} title={folded ? 'Show chat' : 'Hide chat'}>
+          <Chevron up={folded} />
+          {folded && <span>Show chat · {messages.length}</span>}
+        </button>
+      )}
+
       {!empty && (
+        <div className={`chat-fold ${folded ? 'is-folded' : ''}`} aria-hidden={folded}>
+        <div className="chat-fold-inner">
         <div className="transcript" ref={scroller}>
           {messages.map((m, i) => (
             <div key={i} className={`msg msg-${m.role}`}>
@@ -210,13 +244,14 @@ export function ChatDock({ messages, busy, discovering, hasGoals, goalTitle, onS
             </div>
           )}
         </div>
+        </div>
+        </div>
       )}
 
-
-      {!busy && voice === 'idle' && !text.trim() && chips.length > 0 && (
+      {!folded && !busy && voice === 'idle' && !text.trim() && chips.length > 0 && (
         <div className="suggestions" role="group" aria-label="Suggested answers">
           {chips.map((s, i) => (
-            <button key={s} type="button" className={`suggestion ${i === 0 && !starters ? 'is-recommended' : ''}`} onClick={() => onSend(s)}
+            <button key={s} type="button" className={`suggestion ${i === 0 && !starters ? 'is-recommended' : ''}`} onClick={() => sendMessage(s)}
               title={i === 0 && !starters ? 'Recommended' : undefined}>
               {i === 0 && !starters && <span className="suggestion-mark" aria-label="Recommended">✦</span>}
               {s}
