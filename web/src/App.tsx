@@ -414,7 +414,7 @@ export default function App() {
   const color = user?.color ?? '#cfe2ff'
 
   return (
-    <div className={`app view-${view} ${user ? 'has-nav' : ''} ${view === 'sky' && selectedGoal && !discovering && !panelHidden ? 'has-panel' : ''} ${desktop ? 'is-desktop' : ''} ${navCollapsed ? 'nav-collapsed' : ''}`} style={{ ['--me' as string]: color }}>
+    <div className={`app view-${view} ${user ? 'has-nav' : ''} ${view === 'sky' && selectedGoal && !discovering && !panelHidden ? 'has-panel' : ''} ${desktop ? 'is-desktop' : ''} ${navCollapsed ? 'nav-collapsed' : ''} ${user && view === 'sky' && discovering && messages.length === 0 ? 'is-forging' : ''}`} style={{ ['--me' as string]: color }}>
       <Universe
         me={user}
         myGoals={goals}
@@ -446,6 +446,9 @@ export default function App() {
           }} onNew={startNewStar}
           onView={v => { sound.unlock(); setView(v) }} onClose={() => setNavOpen(false)} />
       )}
+
+      {/* Asking for a new goal: soften the sky behind the question so stars and labels don't mix with it. */}
+      <div className={`forge-scrim ${user && view === 'sky' && discovering && messages.length === 0 ? 'is-on' : ''}`} aria-hidden />
 
       {user && view === 'sky' && selectedGoal && !discovering && !panelHidden && (
         <div className="left-column">

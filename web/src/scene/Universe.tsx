@@ -206,6 +206,9 @@ function Projector({ specs, els }: { specs: LabelSpec[]; els: React.MutableRefOb
   const { camera, size } = useThree()
   const v = useMemo(() => new THREE.Vector3(), [])
   useFrame(() => {
+    // The camera moved earlier this frame, but its world matrix only refreshes at render time;
+    // refresh it now so labels use this frame's view and stay glued to their stars.
+    camera.updateMatrixWorld()
     for (const spec of specs) {
       const el = els.current.get(spec.key)
       if (!el) continue

@@ -775,7 +775,8 @@ button:not(:disabled):active { transform: scale(0.97); transition: transform 90m
 .pc-goal-bar span { display: block; height: 100%; background: var(--pc); }
 
 /* Labels projected from the 3D scene (no per-label React roots) */
-.label-layer { position: absolute; inset: 0; pointer-events: none; overflow: hidden; z-index: 1; }
+.label-layer { position: absolute; inset: 0; pointer-events: none; overflow: hidden; z-index: 1; transition: opacity .35s var(--ease); }
+.is-forging .label-layer { opacity: 0; }
 .label-anchor { position: absolute; left: 0; top: 0; will-change: transform; }
 
 /* Focus mode: tags under each star, and a small legend */
@@ -811,3 +812,13 @@ button:not(:disabled):active { transform: scale(0.97); transition: transform 90m
 }
 .chat-toggle:hover, .chat-toggle:focus-visible, .chat-toggle.is-folded { opacity: 1; color: var(--text); border-color: var(--stroke-strong); }
 .chat-toggle.is-folded { margin-bottom: 0; padding: 0 12px; }
+
+/* New-goal screen: blur and dim the sky behind the question */
+.forge-scrim {
+  position: absolute; inset: 0; z-index: 8; pointer-events: none; opacity: 0;
+  background: radial-gradient(70% 60% at 50% 60%, rgba(2, 3, 9, 0.35), rgba(2, 3, 9, 0.6));
+  backdrop-filter: blur(0px); -webkit-backdrop-filter: blur(0px);
+  transition: opacity .45s var(--ease), backdrop-filter .45s var(--ease), -webkit-backdrop-filter .45s var(--ease);
+}
+.forge-scrim.is-on { opacity: 1; backdrop-filter: blur(14px) saturate(120%); -webkit-backdrop-filter: blur(14px) saturate(120%); }
+@media (prefers-reduced-transparency: reduce) { .forge-scrim.is-on { backdrop-filter: none; -webkit-backdrop-filter: none; background: rgba(2, 3, 9, 0.85); } }
