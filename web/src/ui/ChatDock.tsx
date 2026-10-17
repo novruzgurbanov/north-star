@@ -68,6 +68,7 @@ export function ChatDock({ messages, busy, discovering, hasGoals, goalTitle, onS
   const [text, setText] = useState('')
   const [voice, setVoice] = useState<VoiceState>('idle')
   const [seconds, setSeconds] = useState(0)
+  const [slow, setSlow] = useState(false)
   const recorder = useRef<Recorder | null>(null)
   const input = useRef<HTMLTextAreaElement>(null)
   const scroller = useRef<HTMLDivElement>(null)
@@ -114,6 +115,13 @@ export function ChatDock({ messages, busy, discovering, hasGoals, goalTitle, onS
   }, [voice])
 
   useEffect(() => () => recorder.current?.cancel(), [])
+
+  // The strongest model can take a while; say so instead of leaving bare dots.
+  useEffect(() => {
+    if (!busy) { setSlow(false); return }
+    const id = setTimeout(() => setSlow(true), 3500)
+    return () => clearTimeout(id)
+  }, [busy])
 
   const submit = () => {
     const value = text.trim()
@@ -198,7 +206,7 @@ export function ChatDock({ messages, busy, discovering, hasGoals, goalTitle, onS
           {busy && (
             <div className="msg msg-assistant">
               <span className="msg-mark" aria-hidden />
-              <p className="typing" aria-label="North Star is thinking"><i /><i /><i /></p>
+              <p className="typing" aria-label="North Star is thinking"><i /><i /><i />{slow && <span className="typing-note">thinking it through…</span>}</p>
             </div>
           )}
         </div>

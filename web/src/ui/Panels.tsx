@@ -1,6 +1,6 @@
-import { useState, type ReactNode } from 'react'
-import type { Goal, PointsRow, Stats, User } from '../types'
-import { Calendar, Clock, Flame, Plus, Spark } from './icons'
+import { useState } from 'react'
+import type { PointsRow, Stats, User } from '../types'
+import { Clock, Flame, Spark } from './icons'
 
 export function TopBar({ user, stats, points, view, onView, onMenu }: {
   user: User | null; stats: Stats; points: PointsRow | null
@@ -37,113 +37,6 @@ export function TopBar({ user, stats, points, view, onView, onMenu }: {
         </div>
       ) : <span />}
     </header>
-  )
-}
-
-const KIND_LABEL: Record<string, string> = {
-  motivation: 'Why', obstacle: 'In the way', distraction: 'Pulls me off track',
-  on_track: 'Working looks like', action: 'Action', subgoal: 'Sub-goal',
-}
-
-const EXTRA_PROMPTS = [
-  { kind: 'distraction', label: 'What pulls you off track', ask: 'Let’s note what usually pulls me off track.' },
-  { kind: 'on_track', label: 'What working on it looks like', ask: 'Let’s note what working on this looks like on my screen.' },
-]
-
-const DETAIL_PROMPTS: Record<'success' | 'steps' | 'why', { label: string; ask: string }> = {
-  success: { label: 'What success looks like', ask: 'Let’s add what success looks like.' },
-  steps: { label: 'First steps', ask: 'Let’s add the first steps.' },
-  why: { label: 'Why it matters', ask: 'Let’s add why this matters to me.' },
-}
-
-export function GoalPanel({ goal, color, onToggle, focus, onAsk }: {
-  goal: Goal; color: string; onToggle: (milestoneId: string) => void; focus: ReactNode; onAsk: (text: string) => void
-}) {
-  const little = goal.status === 'brainstorm'
-  const missing = goal.missing ?? []
-  // The goal's "why" is shown above; don't repeat the motivation it came from.
-  const details = (goal.details ?? []).filter(d => !(d.kind === 'motivation' && d.text === goal.why))
-  const extras = EXTRA_PROMPTS.filter(p => !(goal.details ?? []).some(d => d.kind === p.kind))
-  const [pending, setPending] = useState<string | null>(null)
-  const [showMore, setShowMore] = useState(false)
-  const ms = [...goal.milestones].sort((a, b) => a.order - b.order)
-  const done = ms.filter(m => m.done).length
-  const nextId = ms.find(m => !m.done)?.id
-
-  return (
-    <aside className="panel glass goal-panel" style={{ ['--star' as string]: color }}>
-      <div className="eyebrow">{little ? 'Little star · Brainstorm' : 'Your star'}</div>
-      <h2 className="panel-title">{goal.title}</h2>
-      {goal.why && <p className="panel-why">{goal.why}</p>}
-      <div className="chips">
-        {goal.deadline && <span className="chip"><Calendar /> {formatDeadline(goal.deadline)}</span>}
-        <span className="chip"><Spark size={11} /> {Math.round(goal.brightness * 100)}% bright</span>
-      </div>
-      {goal.successLooksLike && (
-        <p className="panel-success"><span>Success looks like</span>{goal.successLooksLike}</p>
-      )}
-
-      {details.length > 0 && (
-        <ul className="known">
-          {details.map(d => (
-            <li key={d.id} className={`known-item kind-${d.kind}`}>
-              <span className="known-kind">{KIND_LABEL[d.kind] ?? d.kind}</span>
-              <span className="known-text">{d.text}</span>
-            </li>
-          ))}
-        </ul>
-      )}
-
-      {(missing.length > 0 || extras.length > 0) && (
-        <div className="details">
-          <div className="progress-head"><span>{little ? 'Grow this star' : 'Add more detail'}</span><span className="mono">optional</span></div>
-          {missing.map(m => (
-            <button key={m} className="detail-add" onClick={() => onAsk(DETAIL_PROMPTS[m].ask)}>
-              <Plus size={12} /> {DETAIL_PROMPTS[m].label}
-            </button>
-          ))}
-          {extras.length > 0 && (missing.length === 0 || showMore
-            ? extras.map(p => (
-              <button key={p.kind} className="detail-add" onClick={() => onAsk(p.ask)}>
-                <Plus size={12} /> {p.label}
-              </button>
-            ))
-            : <button className="detail-more" onClick={() => setShowMore(true)}>More details…</button>)}
-        </div>
-      )}
-
-      {ms.length > 0 && (
-        <>
-          <div className="progress">
-            <div className="progress-head">
-              <span>Milestones</span>
-              <span className="mono">{done} / {ms.length} lit</span>
-            </div>
-            <div className="progress-track"><div className="progress-fill" style={{ width: `${(done / ms.length) * 100}%` }} /></div>
-          </div>
-
-          <ul className="milestones">
-            {ms.map(m => (
-              <li key={m.id}>
-                <button
-                  className={`milestone ${m.done ? 'is-done' : ''} ${m.id === nextId ? 'is-next' : ''}`}
-                  disabled={pending === m.id}
-                  onClick={async () => { setPending(m.id); try { await onToggle(m.id) } finally { setPending(null) } }}
-                >
-                  <span className="milestone-star" aria-hidden><Spark size={12} /></span>
-                  <span className="milestone-title">{m.title}</span>
-                  {m.id === nextId && <span className="milestone-next">next</span>}
-                </button>
-              </li>
-            ))}
-          </ul>
-        </>
-      )}
-
-      {little
-        ? <p className="focus-note">Add what success looks like and a first step, and this star is ready for focus sessions.</p>
-        : focus}
-    </aside>
   )
 }
 
@@ -212,10 +105,3 @@ export function formatHours(minutes: number) {
   return `${h < 10 ? h.toFixed(1) : Math.round(h)}h`
 }
 
-function formatDeadline(d: string) {
-  const parsed = /^\d{4}-\d{2}-\d{2}/.test(d) ? new Date(d) : null
-  if (parsed && !isNaN(parsed.getTime())) {
-    return parsed.toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' })
-  }
-  return d
-}

@@ -68,7 +68,7 @@ The left bar's **Settings** page controls how the agent helps (Quiet · Balanced
 | Part | Folder | What it does |
 |---|---|---|
 | Web UI | `web/` | Vite + React + three.js cosmos; glass chat with voice and suggested answers; left bar with Brainstorm, Stars and Settings |
-| API | `server/` | Goals, milestones and details in Neo4j (`NS*` labels); the capturing and coaching agent and the screen-check judge on ai& (`zai-org/glm-5.3-flash`); local Whisper for voice |
+| API | `server/` | Goals, milestones and details in Neo4j (`NS*` labels); the capturing and coaching agent on ai&'s strongest model (`moonshotai/kimi-k3`) and the screen-check judge on the fast `zai-org/glm-5.3-flash` (Kimi K3 takes ~30 s per image, too slow for 20 s checks; change `VISION_MODEL` to switch); local Whisper for voice |
 | Desktop | `desktop/` | Electron shell for Windows; while you focus it captures the screen (and an optional webcam frame) in memory every 20 s by default and sends it to `POST /api/focus/check`; roast notifications |
 | Points | `points/` | Shared multiplayer service: players, verified focus intervals, points and leaderboard (`PS*` labels), with Real and Demo modes |
 

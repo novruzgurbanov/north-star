@@ -6,7 +6,8 @@ import { Universe } from './scene/Universe'
 import { Sidebar, type View } from './ui/Sidebar'
 import { SettingsView } from './ui/SettingsView'
 import { ChatDock } from './ui/ChatDock'
-import { GoalPanel, Leaderboard, Onboarding, TopBar } from './ui/Panels'
+import { Leaderboard, Onboarding, TopBar } from './ui/Panels'
+import { GoalPanel } from './ui/GoalPanel'
 import { FocusCard } from './ui/FocusCard'
 
 const desktop = typeof window !== 'undefined' ? window.northStarDesktop : undefined
@@ -51,6 +52,7 @@ export default function App() {
   const [settings, setSettings] = useState<Settings>(DEFAULT_SETTINGS)
   const [settingsSaving, setSettingsSaving] = useState(false)
   const [navOpen, setNavOpen] = useState(false)
+  const [navCollapsed, setNavCollapsed] = useState(() => read('ns.navCollapsed', false))
   const settingsTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
   const pendingSettings = useRef<Partial<Settings>>({})
   const [bornAt, setBornAt] = useState<Record<string, number>>({})
@@ -298,6 +300,7 @@ export default function App() {
   }
 
   useEffect(() => { sound.setEnabled(settings.sounds) }, [settings.sounds])
+  useEffect(() => { write('ns.navCollapsed', navCollapsed) }, [navCollapsed])
   useEffect(() => {
     if (view !== 'settings') return
     const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') setView('sky') }
@@ -326,7 +329,7 @@ export default function App() {
   const color = user?.color ?? '#cfe2ff'
 
   return (
-    <div className={`app view-${view} ${user ? 'has-nav' : ''} ${view === 'sky' && selectedGoal && !discovering ? 'has-panel' : ''} ${desktop ? 'is-desktop' : ''}`} style={{ ['--me' as string]: color }}>
+    <div className={`app view-${view} ${user ? 'has-nav' : ''} ${view === 'sky' && selectedGoal && !discovering ? 'has-panel' : ''} ${desktop ? 'is-desktop' : ''} ${navCollapsed ? 'nav-collapsed' : ''}`} style={{ ['--me' as string]: color }}>
       <Universe
         me={user}
         myGoals={goals}
@@ -335,7 +338,7 @@ export default function App() {
         discovering={discovering}
         understanding={understanding}
         view={view === 'cosmos' ? 'cosmos' : 'sky'}
-        nav={!!user}
+        nav={!!user && !navCollapsed}
         others={others}
         myScore={myRow?.points ?? stats.score}
         focusing={focusingGoal}
@@ -346,6 +349,7 @@ export default function App() {
       {user && (
         <Sidebar user={user} goals={goals} selected={selected} discovering={discovering} focusingGoalId={focusingGoal}
           view={view} stats={stats} points={myRow ?? null} open={navOpen}
+          collapsed={navCollapsed} onCollapse={() => setNavCollapsed(c => !c)}
           onSelect={id => { setSelected(id); setView('sky') }} onNew={startNewStar}
           onView={v => { sound.unlock(); setView(v) }} onClose={() => setNavOpen(false)} />
       )}
@@ -353,7 +357,7 @@ export default function App() {
       {user && view === 'sky' && selectedGoal && !discovering && (
         <div className="left-column">
           <GoalPanel key={selectedGoal.id} goal={selectedGoal} color={color} onToggle={toggleMilestone} focus={focusControls(selectedGoal)}
-            onAsk={text => { if (!busy) void send(text) }} />
+            focusing={focusingGoal === selectedGoal.id} onAsk={text => { if (!busy) void send(text) }} />
         </div>
       )}
 

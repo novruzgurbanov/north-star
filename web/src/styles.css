@@ -1,3 +1,5 @@
+@property --nav-w { syntax: '<length>'; inherits: true; initial-value: 244px; }
+
 :root {
   --bg: #020309;
   --text: rgba(236, 241, 255, 0.94);
@@ -32,7 +34,8 @@ button:disabled { cursor: default; }
 :focus-visible { outline: 1.5px solid rgba(207, 226, 255, 0.7); outline-offset: 2px; }
 .mono { font-family: var(--mono); font-feature-settings: 'tnum'; }
 
-.app { position: fixed; inset: 0; }
+.app { position: fixed; inset: 0; transition: --nav-w .38s cubic-bezier(0.22, 1, 0.36, 1); }
+.app.nav-collapsed { --nav-w: 60px; }
 .universe { position: absolute !important; inset: 0; }
 
 /* Glass surface */
@@ -152,12 +155,11 @@ button:disabled { cursor: default; }
 
 /* What the agent knows about a goal */
 .known { list-style: none; margin: 0 0 12px; padding: 0; display: flex; flex-direction: column; gap: 6px; }
-.known-item { display: grid; grid-template-columns: 112px 1fr; gap: 10px; font-size: 13px; line-height: 1.4; }
-.known-kind { font-family: var(--mono); font-size: 10px; letter-spacing: 0.1em; text-transform: uppercase; color: var(--faint); padding-top: 2px; }
-.known-text { color: var(--muted); }
-.kind-motivation .known-kind { color: #ffd59e; }
-.kind-on_track .known-kind { color: #8dffc7; }
-.kind-distraction .known-kind, .kind-obstacle .known-kind { color: #ff9eb0; }
+.known-item { position: relative; padding: 3px 0 3px 12px; font-size: 13.5px; line-height: 1.45; color: var(--muted); }
+.known-item::before { content: ''; position: absolute; left: 0; top: 7px; bottom: 7px; width: 2px; border-radius: 2px; background: var(--stroke-strong); }
+.kind-motivation .known-item::before { background: #ffd59e; }
+.kind-on_track .known-item::before { background: #8dffc7; }
+.kind-distraction .known-item::before, .kind-obstacle .known-item::before { background: #ff9eb0; }
 
 /* Verified focus */
 .focus {
@@ -253,6 +255,7 @@ button:disabled { cursor: default; }
   animation: twinkle 1.2s ease-in-out infinite;
 }
 .typing i:nth-child(2) { animation-delay: .18s; }
+.typing-note { margin-left: 8px; font-family: var(--serif); font-style: italic; font-size: 15px; color: var(--faint); animation: rise .5s var(--ease) both; }
 .typing i:nth-child(3) { animation-delay: .36s; }
 
 .meter { display: flex; align-items: center; gap: 12px; padding: 0 6px; font-size: 12px; color: var(--faint); }
@@ -520,6 +523,70 @@ button:disabled { cursor: default; }
 }
 
 
+
+/* Collapsible sidebar: a slim icon rail */
+.nav-collapse {
+  margin-left: auto; display: grid; place-items: center; width: 28px; height: 28px; border: 0; border-radius: 8px;
+  background: transparent; color: var(--faint); transition: color .2s var(--ease), background .2s var(--ease);
+}
+.nav-collapse:hover { color: var(--text); background: rgba(255, 255, 255, 0.07); }
+.nav { transition: width .38s cubic-bezier(0.22, 1, 0.36, 1), transform .35s var(--ease); overflow: hidden; }
+.nav.is-collapsed { padding-inline: 8px; }
+.nav.is-collapsed .nav-text { display: none; }
+.nav.is-collapsed .nav-brand { flex-direction: column; gap: 10px; padding: 2px 0 12px; }
+.nav.is-collapsed .nav-collapse { margin: 0; }
+.nav.is-collapsed .nav-new { padding: 9px 0; }
+.nav.is-collapsed .nav-label { justify-content: center; padding: 0; height: 1px; margin: 10px 8px; background: var(--stroke); }
+.nav.is-collapsed .nav-goal, .nav.is-collapsed .nav-views button { justify-content: center; padding: 9px 0; }
+.nav.is-collapsed .nav-dot { width: 9px; height: 9px; }
+.nav.is-collapsed .nav-live { position: absolute; margin: -14px 0 0 14px; }
+.nav.is-collapsed .nav-goal { position: relative; }
+.nav.is-collapsed .nav-me { justify-content: center; padding-inline: 0; }
+
+/* Goal panel: header with a collapse arrow, meta chips, tabs */
+.goal-panel { display: flex; flex-direction: column; padding-bottom: 14px; }
+.gp-head { display: flex; align-items: flex-start; gap: 10px; }
+.gp-titles { flex: 1; min-width: 0; }
+.gp-head .panel-title { margin-bottom: 6px; }
+.gp-toggle {
+  flex: none; display: grid; place-items: center; width: 30px; height: 30px; margin-top: 2px; border-radius: 50%;
+  border: 1px solid var(--stroke); background: rgba(255, 255, 255, 0.04); color: var(--muted);
+  transition: color .2s var(--ease), background .2s var(--ease);
+}
+.gp-toggle:hover { color: var(--text); background: rgba(255, 255, 255, 0.09); }
+.gp-meta { display: flex; flex-wrap: wrap; gap: 6px; }
+.chip-live { color: #8dffc7; border-color: rgba(141, 255, 199, 0.25); }
+.chip-live::before { content: ''; width: 6px; height: 6px; border-radius: 50%; background: #8dffc7; box-shadow: 0 0 8px #8dffc7; }
+/* Height collapse: animate grid rows from 1fr to 0fr so it can be reversed mid-way. */
+.gp-body { display: grid; grid-template-rows: 1fr; transition: grid-template-rows .4s cubic-bezier(0.22, 1, 0.36, 1), opacity .3s var(--ease); }
+.goal-panel.is-collapsed .gp-body { grid-template-rows: 0fr; opacity: 0; }
+.gp-inner { min-height: 0; overflow: hidden; }
+.gp-tabs { display: flex; width: 100%; margin: 16px 0 6px; }
+.gp-tabs button { flex: 1; position: relative; }
+.tab-dot { position: absolute; top: 5px; right: 8px; width: 5px; height: 5px; border-radius: 50%; background: #8dffc7; box-shadow: 0 0 6px #8dffc7; }
+.gp-section { display: flex; flex-direction: column; padding-top: 4px; }
+.gp-label {
+  display: flex; align-items: baseline; gap: 8px; margin: 16px 0 8px;
+  font-family: var(--mono); font-size: 10.5px; letter-spacing: 0.14em; text-transform: uppercase; color: var(--faint);
+}
+.gp-hint { font-family: var(--sans); font-weight: 400; letter-spacing: 0; text-transform: none; font-size: 11.5px; color: var(--faint); opacity: 0.8; }
+.gp-section .progress-track { margin-bottom: 4px; }
+.gp-section .milestones { margin: 6px 0 0; }
+.gp-quote { margin: 0; font-family: var(--serif); font-style: italic; font-size: 18px; line-height: 1.35; color: var(--text); }
+.gp-text { margin: 0; font-size: 14px; line-height: 1.5; color: var(--muted); }
+
+/* Sub-goals read as results (outlined diamonds); actions read as tasks (arrows, lighter, tighter). */
+.subgoals, .actions { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; }
+.subgoals { gap: 6px; }
+.subgoal {
+  display: flex; align-items: center; gap: 12px; padding: 9px 12px; border-radius: 12px;
+  background: rgba(255, 255, 255, 0.035); border: 1px solid var(--stroke); font-size: 14px; color: var(--text);
+}
+.subgoal-mark { flex: none; width: 9px; height: 9px; transform: rotate(45deg); border: 1.5px solid var(--me); border-radius: 2px; box-shadow: 0 0 8px -2px var(--me); }
+.actions { gap: 0; }
+.action { display: flex; gap: 10px; padding: 5px 2px; font-size: 13.5px; color: var(--muted); }
+.action-mark { color: var(--me); opacity: 0.8; font-size: 12px; line-height: 1.6; }
+
 /* Response: every control answers on press, not on release. */
 button:not(:disabled):active { transform: scale(0.97); transition: transform 90ms ease-out; }
 .nav-goal:not(:disabled):active, .nav-views button:active, .detail-add:active, .milestone:not(:disabled):active { transform: scale(0.985); }
@@ -534,7 +601,7 @@ button:not(:disabled):active { transform: scale(0.97); transition: transform 90m
 .suggestion, .segmented.glass, .me.glass { backdrop-filter: blur(14px) saturate(160%); -webkit-backdrop-filter: blur(14px) saturate(160%); }
 
 /* Vibrancy: small labels over moving, blurred stars get a touch more weight. */
-.eyebrow, .nav-label, .settings-label, .progress-head, .known-kind { font-weight: 500; }
+.eyebrow, .nav-label, .settings-label, .progress-head, .gp-label { font-weight: 500; }
 
 .detail-more {
   align-self: flex-start; margin: 2px 0 0; padding: 6px 0; border: 0; background: transparent;
