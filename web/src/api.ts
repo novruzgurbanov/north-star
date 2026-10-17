@@ -1,19 +1,25 @@
 import type { ChatMessage, ChatResponse, Entry, EntryValues, Goal, NextStep, PointsRow, Recap, Settings, Stats, User, WidgetOp } from './types'
 
-/** An API failure that keeps the HTTP status, so callers can tell "nothing to undo" (409) from a real error. */
+/** An API failure that keeps the HTTP status and the server's error code, so callers can tell the undo route's two 409s apart. */
 export class ApiError extends Error {
   status: number
-  constructor(message: string, status: number) { super(message); this.status = status }
+  code?: string
+  constructor(message: string, status: number, code?: string) { super(message); this.status = status; this.code = code }
 }
 
 async function send<T>(method: 'POST' | 'PATCH' | 'DELETE', path: string, body: unknown): Promise<T> {
   const res = await fetch(`/api${path}`, { method, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })
   if (!res.ok) {
-    // The server answers errors as { error: message }; keep that message, or the raw text if it isn't JSON.
+    // The server answers errors as { error, code? }; keep both, or the raw text if it isn't JSON.
     const text = await res.text().catch(() => '')
     let message = text
-    try { message = (JSON.parse(text) as { error?: string }).error || text } catch { /* not JSON */ }
-    throw new ApiError(message || `${res.status} ${res.statusText}`, res.status)
+    let code: string | undefined
+    try {
+      const parsed = JSON.parse(text) as { error?: string; code?: string }
+      message = parsed.error || text
+      code = parsed.code
+    } catch { /* not JSON */ }
+    throw new ApiError(message || `${res.status} ${res.statusText}`, res.status, code)
   }
   return res.json() as Promise<T>
 }

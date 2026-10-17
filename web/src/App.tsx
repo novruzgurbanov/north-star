@@ -409,9 +409,15 @@ export default function App() {
     queuePanel(goalId, () => api.undoPanel(user.id, goalId))
       .then(res => { if (isLatest(goalId, n)) putGoal(res.goal); toast('Panel restored.') })
       .catch(err => {
-        const empty = err instanceof ApiError && err.status === 409
-        if (empty) setNoUndo(nu => ({ ...nu, [goalId]: version }))
-        toast(empty ? 'Nothing left to undo.' : 'Could not undo that change.')
+        // The server tells the two 409s apart by code: 'empty' really has no undo left at this version,
+        // 'conflict' means the panel moved under the undo (another window) and another click may win.
+        const code = err instanceof ApiError ? err.code : undefined
+        if (code === 'empty') setNoUndo(nu => ({ ...nu, [goalId]: version }))
+        toast(
+          code === 'empty' ? 'Nothing left to undo.'
+            : code === 'conflict' ? 'The panel just changed. Try Undo again.'
+            : 'Could not undo that change.'
+        )
         if (isLatest(goalId, n)) refreshGoals()
       })
   }
@@ -722,7 +728,7 @@ export default function App() {
       {user && view === 'sky' && selectedGoal && !discovering && !panelHidden && (
         <div className="left-column">
           <GoalPanel key={selectedGoal.id} goal={selectedGoal} color={color} onToggle={toggleMilestone} dock={sessionDock(selectedGoal)}
-            focusing={focusingGoal === selectedGoal.id}
+            focusing={focusingGoal === selectedGoal.id} focus={focus}
             sessionHere={!!focus && focus.status !== 'idle' && focus.goalId === selectedGoal.id} hasRecap={!!recaps[selectedGoal.id]}
             onAsk={text => { if (!busy) void send(text) }} track={trackFor(selectedGoal)}
             onDelete={() => deleteGoal(selectedGoal)} />

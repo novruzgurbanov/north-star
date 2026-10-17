@@ -14,9 +14,11 @@ import type { AgentEvent, ChatMessage, Entry, Goal, Milestone, PanelSpec, ProofV
 
 class HttpError extends Error {
   status: number;
-  constructor(status: number, message: string) {
+  code?: string; // machine-readable tag, when two errors share a status (the undo route's two 409s)
+  constructor(status: number, message: string, code?: string) {
     super(message);
     this.status = status;
+    this.code = code;
   }
 }
 
@@ -308,6 +310,8 @@ app.post('/api/chat', async (req: Request, res: Response) => {
     suggestions = result.suggestions;
     const entryMinutesLogged: number[] = []; // minutes of the entries stored this turn
     const focusActions: CoachAction[] = []; // applied after the entries (below)
+    let editFailed = false; // an edit_panel didn't land (model failed or the panel moved twice)
+    let entryFailed = false; // a log_entry's values didn't validate, so nothing was stored
     for (const action of result.actions) {
       if (action.type === 'set_details') {
         if (action.why) whyEmpty = false;
@@ -338,7 +342,7 @@ app.post('/api/chat', async (req: Request, res: Response) => {
         if (event) {
           events.push(event);
           if (event.type === 'entry_logged') entryMinutesLogged.push(event.entry.minutes);
-        }
+        } else entryFailed = true;
         continue;
       }
       if (action.type === 'log_focus') {
@@ -349,11 +353,15 @@ app.post('/api/chat', async (req: Request, res: Response) => {
         // "add a chart for my km": the panel editor rewrites the spec
         const event = await editPanelFromChat(userId, goal.id, action.instruction, settings);
         if (event) events.push(event);
+        else editFailed = true;
         continue;
       }
       const event = await applyCoachAction(userId, goal.id, action);
       if (event) events.push(event);
     }
+    // The reply may have promised a change that never happened; own up to it, one sentence per kind.
+    if (editFailed) reply += " (I couldn't change the panel just now. Ask me again in a moment.)";
+    if (entryFailed) reply += " (I couldn't log that one. Use the log form on the Track tab.)";
     // Focus time the coach logged for an activity it also stored as an entry (same minutes)
     // is the same time twice: skip that one. Any other focus time counts, also when an
     // entry turned out invalid and was never stored.
@@ -828,8 +836,9 @@ app.post('/api/goals/:goalId/panel/undo', async (req: Request, res: Response) =>
   await userGoal(userId, goalId);
   const result = await model.undoPanel(userId, goalId);
   if (result === null) throw new HttpError(404, 'goal not found');
-  if (result === 'empty') throw new HttpError(409, 'nothing to undo');
-  if (result === 'conflict') throw new HttpError(409, 'the panel just changed; try again');
+  // The two 409s are not the same thing: only 'empty' means the undo stack ran out.
+  if (result === 'empty') throw new HttpError(409, 'nothing to undo', 'empty');
+  if (result === 'conflict') throw new HttpError(409, 'the panel just changed; try again', 'conflict');
   res.json({ goal: result });
 });
 
@@ -912,7 +921,8 @@ app.use((_req: Request, res: Response) => {
 // eslint-disable-next-line @typescript-eslint/no-unused-vars
 app.use((err: unknown, _req: Request, res: Response, _next: NextFunction) => {
   if (err instanceof HttpError) {
-    res.status(err.status).json({ error: err.message });
+    if (err.code) res.status(err.status).json({ error: err.message, code: err.code });
+    else res.status(err.status).json({ error: err.message });
     return;
   }
   if (err instanceof z.ZodError) {

@@ -381,7 +381,8 @@ async function main(): Promise<void> {
     );
     check((spec?.version ?? 0) > (beforeEdit?.version ?? 0) + 1, 'version still moves forward', String(spec?.version));
     runPanel = spec;
-    check((await api('POST', `/api/goals/${runId}/panel/undo`, { userId })).status === 409, 'second undo -> 409 (stack empty)');
+    const second = await api('POST', `/api/goals/${runId}/panel/undo`, { userId });
+    check(second.status === 409 && second.json?.code === 'empty', "second undo -> 409, code 'empty' (stack empty)", JSON.stringify(second.json));
   }
 
   console.log('9. PATCH /panel/widgets/:id: move, remove');

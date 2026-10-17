@@ -1,5 +1,5 @@
 import { useEffect, useState, type ReactNode } from 'react'
-import type { DetailKind, Goal, GoalDetail } from '../types'
+import type { DetailKind, FocusState, Goal, GoalDetail } from '../types'
 import { Calendar, Plus, Spark } from './icons'
 import { PanelTrack, type TrackHandlers } from './PanelTrack'
 import { ago } from './widgets/data'
@@ -13,6 +13,8 @@ type Props = {
   color: string
   dock: ReactNode
   focusing: boolean
+  /** The latest focus state, whatever goal it belongs to (a session elsewhere still deserves a cue) */
+  focus: FocusState | null
   /** A session on this goal that isn't idle: active, paused or stopped checking */
   sessionHere: boolean
   /** A session recap for this goal is loading or waiting to be read */
@@ -79,7 +81,7 @@ function readCollapsed() {
   try { return localStorage.getItem('ns.panelCollapsed') === '1' } catch { return false }
 }
 
-export function GoalPanel({ goal, color, dock, focusing, sessionHere, hasRecap, track, onToggle, onAsk, onDelete }: Props) {
+export function GoalPanel({ goal, color, dock, focusing, focus, sessionHere, hasRecap, track, onToggle, onAsk, onDelete }: Props) {
   const [confirmDelete, setConfirmDelete] = useState(false)
   const [deleting, setDeleting] = useState(false)
   const little = goal.status === 'brainstorm'
@@ -106,7 +108,10 @@ export function GoalPanel({ goal, color, dock, focusing, sessionHere, hasRecap, 
   // or stopped checking) or its recap is up, and that widget isn't on screen (About tab, or removed mid-session),
   // the dock stays pinned below, so the session can still be resumed or ended and the recap read.
   const hasFocusWidget = !!goal.panel?.widgets.some(w => w.type === 'focus_session') || (!goal.panel && track.design === 'failed')
-  const pinnedDock = little || ((sessionHere || hasRecap) && (!hasFocusWidget || tab !== 'track'))
+  const offScreen = !hasFocusWidget || tab !== 'track'
+  const pinnedDock = little || ((sessionHere || hasRecap) && offScreen)
+  // A session running on another goal gets v1's cue, not a second "Begin focus" card on a panel without one.
+  const elsewhere = !pinnedDock && offScreen && focus && focus.status !== 'idle' && focus.goalId !== goal.id ? focus : null
 
   const aboutGroups = ABOUT_GROUPS
     .map(g => ({ ...g, items: of(g.kind).filter(d => !(d.kind === 'motivation' && d.text === goal.why)) }))
@@ -243,6 +248,13 @@ export function GoalPanel({ goal, color, dock, focusing, sessionHere, hasRecap, 
           </div>
 
           {pinnedDock && <div className="gp-dock">{dock}</div>}
+          {elsewhere && (
+            <div className="gp-dock">
+              <p className="focus-note">
+                {elsewhere.goalTitle ? `You’re focusing on “${elsewhere.goalTitle}”.` : 'You’re in a focus session on another goal.'}
+              </p>
+            </div>
+          )}
         </div>
       </div>
     </aside>

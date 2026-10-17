@@ -1090,6 +1090,14 @@ button:not(:disabled):active { transform: scale(0.97); transition: transform 90m
 .entry-del:hover { color: #ffb3c0; background: rgba(255, 107, 129, 0.1); }
 .entry-del.is-confirming { padding: 0 10px; color: #ffd2da; border-color: rgba(255, 143, 163, 0.45); background: rgba(255, 107, 129, 0.16); }
 
+/* Entries of a log the panel no longer has: a quiet card below the widgets, opened on demand */
+.orphaned-head {
+  display: flex; align-items: baseline; justify-content: space-between; gap: 8px; width: 100%;
+  border: 0; padding: 0; background: transparent; text-align: left;
+}
+.orphaned-head .gp-hint { flex: none; white-space: nowrap; transition: color .2s var(--ease); }
+.orphaned-head:hover .gp-hint { color: var(--muted); }
+
 /* Photo check-in: a small glass sheet over the sky */
 .sheet-scrim {
   position: fixed; inset: 0; z-index: 60; display: grid; place-items: center; padding: 16px;

@@ -15,7 +15,7 @@ type Props = {
   onDelete: (entryId: string) => Promise<void>
 }
 
-const PROOF_TONE = { verified: 'Verified', none: 'Self-reported', unverified: 'Not verified', rejected: 'Not verified' } as const
+export const PROOF_TONE = { verified: 'Verified', none: 'Self-reported', unverified: 'Not verified', rejected: 'Not verified' } as const
 
 // A habit log with a single yes/no ("Done") starts on yes, so logging it is one tap.
 const initialDraft = (fields: Field[]): Draft =>

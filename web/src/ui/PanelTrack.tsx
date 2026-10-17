@@ -1,8 +1,8 @@
 import { useEffect, useRef, useState, type ReactNode } from 'react'
 import type { DetailKind, Entry, EntryValues, Goal, NextStep, Widget, WidgetOp } from '../types'
-import { ArrowUp, Plus, Spark } from './icons'
+import { ArrowUp, Plus, Spark, Trash } from './icons'
 import { ago, entriesOf, logWidget } from './widgets/data'
-import { LogWidget } from './widgets/LogWidget'
+import { LogWidget, PROOF_TONE } from './widgets/LogWidget'
 import { MilestoneTimeline } from './widgets/MilestoneTimeline'
 import { ChecklistWidget, CountdownWidget, NextStepWidget, NoteWidget } from './widgets/SimpleWidgets'
 import { ChartWidget, CounterWidget, HabitGridWidget, StreakWidget } from './widgets/StatWidgets'
@@ -118,6 +118,62 @@ function ChangePanel({ onEdit, onBusy, onUndo }: {
   )
 }
 
+// The log's field labels are gone with it, so an orphaned entry is summarized by its keys: "books finished: 1 · feeling: 4".
+const orphanSummary = (e: Entry) =>
+  Object.entries(e.values ?? {}).map(([k, v]) => `${k.replace(/_/g, ' ')}: ${v === true ? 'yes' : v === false ? 'no' : String(v).slice(0, 40)}`).join(' · ')
+
+/**
+ * Entries of a log the panel no longer has: they belong to no widget, so they would otherwise be
+ * invisible (and undeletable). One small card below the widgets, collapsed by default; deleting
+ * goes through the same handler as the log's own list. Undo restoring the log rehomes them.
+ */
+function OrphanedEntries({ entries, onDelete }: { entries: Entry[]; onDelete: (entryId: string) => Promise<void> }) {
+  const [open, setOpen] = useState(false)
+  const [confirming, setConfirming] = useState<string | null>(null)
+  const [deleting, setDeleting] = useState<string | null>(null)
+
+  // An armed delete that is never confirmed steps back down after a moment (same as the log's list).
+  useEffect(() => {
+    if (!confirming) return
+    const id = setTimeout(() => setConfirming(null), 4000)
+    return () => clearTimeout(id)
+  }, [confirming])
+
+  return (
+    <section className="wcard orphaned" aria-label="Entries from a removed log">
+      <button className="orphaned-head" onClick={() => setOpen(o => !o)} aria-expanded={open}>
+        <span className="wcard-title">Entries from a removed log</span>
+        <span className="gp-hint">{entries.length}{open ? ' · Hide' : ' · Show'}</span>
+      </button>
+      {open && (
+        <ul className="entries">
+          {entries.map(e => (
+            <li key={e.id} className="entry">
+              <span className={`entry-dot tone-${e.proof}`} title={PROOF_TONE[e.proof]} aria-hidden />
+              <span className="entry-text">
+                <span className="entry-values">{orphanSummary(e) || 'Logged'}</span>
+                <span className="entry-meta mono">
+                  {new Date(e.at).toLocaleDateString()}{e.minutes > 0 && ` · ${e.minutes} min`}
+                </span>
+              </span>
+              <button className={`entry-del ${confirming === e.id ? 'is-confirming' : ''}`} disabled={deleting === e.id}
+                aria-label={confirming === e.id ? 'Confirm delete' : `Delete entry from ${ago(e.at)}`}
+                onClick={async () => {
+                  if (confirming !== e.id) { setConfirming(e.id); return }
+                  setConfirming(null)
+                  setDeleting(e.id)
+                  try { await onDelete(e.id) } finally { setDeleting(null) }
+                }}>
+                {confirming === e.id ? 'Delete' : <Trash />}
+              </button>
+            </li>
+          ))}
+        </ul>
+      )}
+    </section>
+  )
+}
+
 /** The Track tab: the goal's AI-designed widgets, top to bottom. */
 export function PanelTrack({ goal, dock, track, onToggle, onAsk }: Props) {
   const [reworking, setReworking] = useState(false)
@@ -133,6 +189,9 @@ export function PanelTrack({ goal, dock, track, onToggle, onAsk }: Props) {
   const of = (kind: DetailKind) => (goal.details ?? []).filter(d => d.kind === kind)
   const subgoals = of('subgoal').filter(d => !milestoneTitles.has(d.text.trim().toLowerCase()))
   const sessions = (goal.sessions ?? []).slice(0, 2)
+  // Entries whose log widget is gone from the panel: kept and still deletable, in their own card below.
+  const logIds = new Set(widgets.filter(w => w.type === 'log').map(w => w.id))
+  const orphaned = (goal.entries ?? []).filter(e => !logIds.has(e.widgetId)).sort((a, b) => b.at.localeCompare(a.at))
 
   // Removing a card unmounts the ⋯ button that had focus. Hand focus to the card that took its place
   // (or the one above, for the last card) instead of letting it fall back to the page.
@@ -225,6 +284,7 @@ export function PanelTrack({ goal, dock, track, onToggle, onAsk }: Props) {
             {body(w)}
           </WidgetCard>
         ))}
+        {orphaned.length > 0 && <OrphanedEntries entries={orphaned} onDelete={track.onDeleteEntry} />}
       </div>
 
       {editable && <ChangePanel onEdit={track.onEdit} onBusy={setReworking} onUndo={track.canUndo ? track.onUndo : undefined} />}
