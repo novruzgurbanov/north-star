@@ -12,6 +12,7 @@ type GoalDetail = { id: string; kind: DetailKind; text: string; createdAt: strin
 type Goal = {
   id: string; title: string; why: string; successLooksLike: string; deadline: string | null;
   status: 'brainstorm' | 'ready'; // ready = successLooksLike non-empty AND milestones.length >= 1
+  public: boolean;               // public goals are published to the cosmos; missing stored value -> true
   missing: Array<'success' | 'steps' | 'why'>; // the details still empty, in that order
   brightness: number;            // 0..1; brainstorm stars 0.12 + 0.04 per filled detail, ready goals 0.25+
   createdAt: string;             // ISO
@@ -31,7 +32,7 @@ type Settings = {
   cameraByDefault: boolean                         // default false
   suggestions: boolean                             // default true (reply chips)
   sounds: boolean                                  // default true
-  shareGoalTitle: boolean                          // default true (goal title on the shared leaderboard)
+  shareGoalTitle: boolean                          // default true (new goals are public by default; the active goal's title still shows on the leaderboard)
 }
 type Stats = { score: number; streak: number; focusedMinutes: number; milestonesDone: number; starsLit: number }
 type ChatMessage = { role: 'user' | 'assistant'; content: string }
@@ -54,12 +55,14 @@ type AgentEvent =
 | GET | `/api/users/:userId` | | `{ user, goals: Goal[], stats: Stats, points: PointsRow \| null, settings: Settings }` (`user.pointsPlayerId` links to the points service) |
 | GET | `/api/users/:userId/settings` | | `{ settings: Settings }` (defaults filled in for missing/invalid keys) |
 | PUT | `/api/users/:userId/settings` | partial `Settings` | `{ settings: Settings }` (validated, merged, saved; 400 on invalid values, 404 unknown user) |
+| PATCH | `/api/users/:userId` | `{ color }` (hex `^#[0-9a-fA-F]{6}$`) | `{ user }`; also updates the points player's color (fail soft) |
 | POST | `/api/chat` | `{ userId, goalId?: string, messages: ChatMessage[] }` | `{ reply, understanding, phase, events: AgentEvent[], goals: Goal[], stats: Stats, suggestions: string[] }` (2–3 tappable replies, recommended first) |
 | POST | `/api/milestones/:id/toggle` | `{ userId }` | `{ goal, stats }` |
 | POST | `/api/activity` | `{ userId, goalId?: string, onTask: boolean, minutes: number, source?: string }` | `{ goal, stats }` |
 | POST | `/api/users/:userId/active-goal` | `{ goalId }` | `{ ok, points: PointsRow \| null }`; shares that goal's title with the cosmos |
 | POST | `/api/focus/check` | `{ userId, goalId, screen, camera?, sinceSeconds }` (base64 JPEGs) | `{ verdict, confidence, reason, nudge, roast, notifyAbove, counted, countedSeconds, goal, stats, points }`; on track with confidence ≥ the `strictness` count threshold logs `sinceSeconds` locally and reports the interval to the points service |
 | POST | `/api/goals/:goalId/next-step` | `{ userId }` | `{ task, minutes, why, milestoneId }` — the one task (max 10 words, starts with a verb) to do right now; `minutes` is 15, 25, 50 or 90; `milestoneId` is the undone milestone it advances, if any; 404 for unknown user/goal |
+| PATCH | `/api/goals/:goalId` | `{ userId, public }` | `{ goal }` (404 if not theirs); republishes the user's public goals to the cosmos |
 | POST | `/api/sessions/recap` | `{ userId, goalId, task (1–120 chars), plannedMinutes (5–180), activeSeconds, verifiedSeconds, completed, checks: { at, verdict, reason (≤200 chars) }[] }` (max 200 checks) | `{ session, headline, summary, driftNote, next: { task, minutes }, suggestMilestoneId }` — saves the session on the goal and writes an honest recap; `suggestMilestoneId` set only when verified time ≥ 70% of planned and the task clearly matches that still-undone milestone; the session is saved even when the AI call fails |
 | POST | `/api/transcribe` | raw 16 kHz mono Float32 PCM | `{ text, ms, seconds }` (local Whisper) |
 | GET | `/api/cosmos` | | `{ players: PointsRow[], offline }` from the shared points service |
@@ -71,6 +74,7 @@ type AgentEvent =
 - The coach also records small facts (`DetailKind`: why it matters, what is in the way, what distracts them, sub-goals, concrete actions, what working looks like on screen) as `detail_added` events, max 120 chars, 30 per goal, no exact duplicates; a recorded `motivation` also fills an empty `why`.
 - `/api/focus/check` returns `roast` too: one playful line teasing the off-track activity (PG, never about the person), non-empty only when `verdict` is `off_track` and the user's `roast` setting is not `off`.
 - `Settings` are per-user and applied by the server: `strictness` sets the focus-check count threshold (confidence ≥ relaxed 0.5 · normal 0.6 · strict 0.75) and `notifyAbove` in the response (relaxed 0.85 · normal 0.7 · strict 0.6) tells the desktop when to notify on off-track. `helpfulness` styles the capture/coach replies; `roast` `off` forces `roast` to `""`, `mild` keeps the gentle teasing, `spicy` makes it sharper (still PG). When `shareGoalTitle` turns false the points player's `goalTitle` is cleared immediately, and while it is false no goal title is ever sent to the points service.
+- Per-goal visibility: every goal is public or private. New goals are public when `shareGoalTitle` is on (the default); `PATCH /api/goals/:goalId` flips one goal. The server publishes the user's public goals to the points service (`PUT /v1/players/:id/goals`, max 12, newest last, shape `{ id, title, status, brightness, milestonesDone, milestonesTotal }` from [POINTS.md](POINTS.md)) after a goal is created, details are updated, a milestone is toggled/completed/added, a goal's visibility changes, a session recap is saved, and on `GET /api/users/:userId` at most once per 60 s per user — always fire and forget, failing soft. A private goal's title is never sent to the points service; the legacy single `goalTitle` (active goal on the leaderboard) keeps working for public goals.
 - `/api/activity` is the integration point for the camera/screen tracker. `onTask: false` minutes are stored but earn nothing. If `goalId` is missing, use the user's most recent goal.
 - Focus sessions are the core loop on ready goals: `/api/goals/:goalId/next-step` has the coach pick the next task (it sees the goal's milestones, subgoal/action details and the last 3 sessions, so it never repeats finished work); `/api/sessions/recap` ends a session, saves it on the goal (`Goal.sessions`, newest first, max 5) and returns the recap plus the next task. A session's `drifts` counts its `off_track` checks; `driftNote` names the drift pattern and is `""` when the user never drifted.
 

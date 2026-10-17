@@ -12,6 +12,15 @@ const MINUTE = 60_000;
 const HOUR = 3_600_000;
 const DAY = 86_400_000;
 
+interface SeedGoal {
+  id: string;
+  title: string;
+  status: 'brainstorm' | 'ready';
+  brightness: number;
+  milestonesDone: number;
+  milestonesTotal: number;
+}
+
 interface SeedPlayer {
   name: string;
   goalTitle: string;
@@ -21,19 +30,84 @@ interface SeedPlayer {
   sources: string[];
   /** When true, today's last interval ends ~30 s before the seed runs (player shows as live). */
   live?: boolean;
+  /** Public goals (constellation stars); first one mirrors goalTitle. */
+  goals: SeedGoal[];
 }
 
 // points = minutes + 25 * streak, so e.g. Marcus: 1150 + 25*9 = 1375.
 const SEED_PLAYERS: SeedPlayer[] = [
-  { name: 'Aiko',   goalTitle: 'Pass JLPT N3',                     minutesByDay: [85, 90, 80, 95, 88, 92, 76, 70, 64, 0],            live: true, sources: ['north-star'] },
-  { name: 'Marcus', goalTitle: 'Ship my indie game demo',          minutesByDay: [130, 140, 125, 135, 128, 132, 120, 118, 122, 0],   sources: ['north-star', 'goal-coach'] },
-  { name: 'Lena',   goalTitle: 'Learn Clair de Lune',              minutesByDay: [90, 85, 95, 88, 92, 85, 85, 0, 0, 0],              sources: ['north-star', 'goal-coach'] },
-  { name: 'Ravi',   goalTitle: 'Get my first ML internship',       minutesByDay: [110, 108, 112, 105, 105, 0, 0, 0, 0, 0],           sources: ['goal-coach'] },
-  { name: 'Sofia',  goalTitle: 'Launch a ceramics shop',           minutesByDay: [125, 130, 125, 0, 0, 0, 0, 0, 0, 0],               sources: ['north-star', 'goal-coach'] },
-  { name: 'Kenji',  goalTitle: 'Run a half marathon',              minutesByDay: [0, 0, 60, 50, 30, 0, 0, 0, 0, 0],                  sources: ['north-star'] },
-  { name: 'Amara',  goalTitle: 'Read 24 books this year',          minutesByDay: [100, 105, 98, 102, 100, 99, 98, 98, 0, 0],         sources: ['north-star', 'goal-coach'] },
-  { name: 'Tom',    goalTitle: 'Cook through a Japanese cookbook', minutesByDay: [55, 0, 0, 0, 0, 0, 0, 0, 0, 0],                    sources: ['goal-coach'] },
-  { name: 'Mei',    goalTitle: 'Finish my thesis draft',           minutesByDay: [50, 45, 0, 0, 0, 0, 0, 0, 0, 0],                   live: true, sources: ['north-star', 'goal-coach'] },
+  {
+    name: 'Aiko', goalTitle: 'Pass JLPT N3',
+    minutesByDay: [85, 90, 80, 95, 88, 92, 76, 70, 64, 0], live: true, sources: ['north-star'],
+    goals: [
+      { id: 'jlpt-n3', title: 'Pass JLPT N3', status: 'ready', brightness: 0.9, milestonesDone: 12, milestonesTotal: 20 },
+      { id: 'jp-diary', title: 'Keep a Japanese diary', status: 'ready', brightness: 0.55, milestonesDone: 3, milestonesTotal: 7 },
+    ],
+  },
+  {
+    name: 'Marcus', goalTitle: 'Ship my indie game demo',
+    minutesByDay: [130, 140, 125, 135, 128, 132, 120, 118, 122, 0], sources: ['north-star', 'goal-coach'],
+    goals: [
+      { id: 'ship-demo', title: 'Ship my indie game demo', status: 'ready', brightness: 1, milestonesDone: 8, milestonesTotal: 10 },
+      { id: 'boss-fight', title: 'Polish the boss fight', status: 'ready', brightness: 0.75, milestonesDone: 5, milestonesTotal: 6 },
+      { id: 'weekly-devlog', title: 'Post a devlog every week', status: 'brainstorm', brightness: 0.4, milestonesDone: 1, milestonesTotal: 8 },
+    ],
+  },
+  {
+    name: 'Lena', goalTitle: 'Learn Clair de Lune',
+    minutesByDay: [90, 85, 95, 88, 92, 85, 85, 0, 0, 0], sources: ['north-star', 'goal-coach'],
+    goals: [
+      { id: 'clair-de-lune', title: 'Learn Clair de Lune', status: 'ready', brightness: 0.8, milestonesDone: 6, milestonesTotal: 9 },
+      { id: 'daily-scales', title: 'Practice scales daily', status: 'ready', brightness: 0.5, milestonesDone: 20, milestonesTotal: 30 },
+    ],
+  },
+  {
+    name: 'Ravi', goalTitle: 'Get my first ML internship',
+    minutesByDay: [110, 108, 112, 105, 105, 0, 0, 0, 0, 0], sources: ['goal-coach'],
+    goals: [
+      { id: 'ml-internship', title: 'Get my first ML internship', status: 'ready', brightness: 0.85, milestonesDone: 4, milestonesTotal: 5 },
+      { id: 'kaggle-project', title: 'Ship a Kaggle project', status: 'ready', brightness: 0.6, milestonesDone: 2, milestonesTotal: 4 },
+    ],
+  },
+  {
+    name: 'Sofia', goalTitle: 'Launch a ceramics shop',
+    minutesByDay: [125, 130, 125, 0, 0, 0, 0, 0, 0, 0], sources: ['north-star', 'goal-coach'],
+    goals: [
+      { id: 'shop-launch', title: 'Launch a ceramics shop', status: 'ready', brightness: 0.95, milestonesDone: 7, milestonesTotal: 10 },
+      { id: 'hundred-bowls', title: 'Throw 100 bowls', status: 'ready', brightness: 0.7, milestonesDone: 46, milestonesTotal: 100 },
+      { id: 'shop-name', title: 'Pick a shop name', status: 'brainstorm', brightness: 0.3, milestonesDone: 0, milestonesTotal: 1 },
+    ],
+  },
+  {
+    name: 'Kenji', goalTitle: 'Run a half marathon',
+    minutesByDay: [0, 0, 60, 50, 30, 0, 0, 0, 0, 0], sources: ['north-star'],
+    goals: [
+      { id: 'half-marathon', title: 'Run a half marathon', status: 'ready', brightness: 0.5, milestonesDone: 3, milestonesTotal: 12 },
+    ],
+  },
+  {
+    name: 'Amara', goalTitle: 'Read 24 books this year',
+    minutesByDay: [100, 105, 98, 102, 100, 99, 98, 98, 0, 0], sources: ['north-star', 'goal-coach'],
+    goals: [
+      { id: '24-books', title: 'Read 24 books this year', status: 'ready', brightness: 0.9, milestonesDone: 17, milestonesTotal: 24 },
+      { id: 'lights-out', title: 'Lights out by midnight', status: 'brainstorm', brightness: 0.45, milestonesDone: 5, milestonesTotal: 14 },
+    ],
+  },
+  {
+    name: 'Tom', goalTitle: 'Cook through a Japanese cookbook',
+    minutesByDay: [55, 0, 0, 0, 0, 0, 0, 0, 0, 0], sources: ['goal-coach'],
+    goals: [
+      { id: 'jp-cookbook', title: 'Cook through a Japanese cookbook', status: 'ready', brightness: 0.65, milestonesDone: 9, milestonesTotal: 27 },
+    ],
+  },
+  {
+    name: 'Mei', goalTitle: 'Finish my thesis draft',
+    minutesByDay: [50, 45, 0, 0, 0, 0, 0, 0, 0, 0], live: true, sources: ['north-star', 'goal-coach'],
+    goals: [
+      { id: 'thesis-draft', title: 'Finish my thesis draft', status: 'ready', brightness: 0.75, milestonesDone: 4, milestonesTotal: 6 },
+      { id: 'advisor-email', title: 'Email my advisor', status: 'brainstorm', brightness: 0.35, milestonesDone: 0, milestonesTotal: 1 },
+    ],
+  },
 ];
 
 function localMidnight(ms: number): number {
@@ -93,7 +167,10 @@ async function main(): Promise<void> {
   const now = Date.now();
 
   await run(
-    'MATCH (p:PSPlayer {seeded: true}) OPTIONAL MATCH (p)-[:LOGGED]->(i:PSInterval) DETACH DELETE p, i',
+    'MATCH (p:PSPlayer {seeded: true}) ' +
+      'OPTIONAL MATCH (p)-[:LOGGED]->(i:PSInterval) ' +
+      'OPTIONAL MATCH (p)-[:SHARES]->(g:PSGoal) ' +
+      'DETACH DELETE p, i, g',
   );
 
   const players = SEED_PLAYERS.map(sp => {
@@ -108,17 +185,19 @@ async function main(): Promise<void> {
     };
   });
 
-  await run(
+  const idRecords = await run(
     `UNWIND $players AS pl
      MERGE (p:PSPlayer {nameLower: pl.nameLower})
      ON CREATE SET p.id = pl.id, p.name = pl.name, p.color = pl.color, p.goalTitle = pl.goalTitle,
                    p.seeded = true, p.createdAt = pl.createdAt
-     ON MATCH SET p.seeded = true`,
+     ON MATCH SET p.seeded = true
+     RETURN p.id AS id`,
     { players },
   );
+  const ids = idRecords.map(r => String(r.id));
 
   const intervals = SEED_PLAYERS.flatMap((sp, index) =>
-    planIntervals(sp, players[index].id, index, now),
+    planIntervals(sp, ids[index], index, now),
   );
   await run(
     `UNWIND $intervals AS iv
@@ -129,7 +208,29 @@ async function main(): Promise<void> {
     { intervals },
   );
 
-  console.log(`Seeded ${players.length} players with ${intervals.length} intervals:`);
+  const goals = SEED_PLAYERS.flatMap((sp, index) =>
+    sp.goals.map((goal, ord) => ({
+      ...goal,
+      key: `${ids[index]}:${goal.id}`,
+      playerId: ids[index],
+      ord,
+      updatedAt: new Date(now).toISOString(),
+    })),
+  );
+  await run(
+    `UNWIND $goals AS gl
+     MATCH (p:PSPlayer {id: gl.playerId})
+     MERGE (goal:PSGoal {key: gl.key})
+     SET goal.goalId = gl.id, goal.title = gl.title, goal.status = gl.status,
+         goal.brightness = gl.brightness, goal.milestonesDone = gl.milestonesDone,
+         goal.milestonesTotal = gl.milestonesTotal, goal.ord = gl.ord, goal.updatedAt = gl.updatedAt
+     MERGE (p)-[:SHARES]->(goal)`,
+    { goals },
+  );
+
+  console.log(
+    `Seeded ${players.length} players with ${intervals.length} intervals and ${goals.length} public goals:`,
+  );
   SEED_PLAYERS.forEach(sp => {
     const total = sp.minutesByDay.reduce((sum, m) => sum + m, 0);
     let streak = 0;

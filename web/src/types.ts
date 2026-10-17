@@ -30,6 +30,7 @@ export type Goal = {
   missing?: Array<'success' | 'steps' | 'why'>
   details?: GoalDetail[]
   sessions?: Session[]
+  public?: boolean
 }
 
 export type User = { id: string; name: string; color: string; seeded: boolean; pointsPlayerId?: string | null }
@@ -80,6 +81,12 @@ export type ChatResponse = {
   suggestions?: string[]
 }
 
+/** A goal a player chose to make public (see POINTS.md). */
+export type PublicGoal = {
+  id: string; title: string; status: 'brainstorm' | 'ready'; brightness: number
+  milestonesDone: number; milestonesTotal: number
+}
+
 /** A player in the shared points service (see POINTS.md). */
 export type PointsRow = {
   id: string
@@ -95,6 +102,7 @@ export type PointsRow = {
   lastActiveAt: string | null
   live: boolean
   sources: string[]
+  goals?: PublicGoal[]
 }
 
 export type FocusStatus = 'idle' | 'active' | 'paused' | 'error'

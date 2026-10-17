@@ -48,6 +48,15 @@ const toggleSchema = z.object({
   userId: z.string().min(1, 'userId is required'),
 });
 
+const userColorSchema = z.object({
+  color: z.string().regex(/^#[0-9a-fA-F]{6}$/, 'color must be a hex color like #9effd8'),
+});
+
+const goalVisibilitySchema = z.object({
+  userId: z.string().min(1, 'userId is required'),
+  public: z.boolean(),
+});
+
 const activitySchema = z.object({
   userId: z.string().min(1, 'userId is required'),
   goalId: z.string().min(1).optional(),
@@ -74,6 +83,59 @@ async function ensurePlayer(user: User, goalTitle?: string | null): Promise<stri
   await model.setPointsPlayerId(user.id, player.id);
   user.pointsPlayerId = player.id;
   return player.id;
+}
+
+// ---------------------------------------------------------------------------
+// Public goals on the shared cosmos (BRIEF-visibility.md)
+// ---------------------------------------------------------------------------
+
+/** Last time GET /api/users/:id kicked off a public-goal sync, per user. */
+const lastPublicSyncAt = new Map<string, number>();
+const PUBLIC_SYNC_INTERVAL_MS = 60_000; // the GET trigger runs at most once per 60 s per user
+
+/**
+ * Publish the user's public goals to the shared points service: at most 12,
+ * oldest first so the newest goal is last, mapped to the PublicGoal shape from
+ * ../POINTS.md. Fire and forget: callers use `void syncPublicGoals(...)`, it
+ * never blocks a response and it never throws (fail soft, like points.ts).
+ */
+async function syncPublicGoals(userId: string): Promise<void> {
+  try {
+    const user = await model.getUser(userId);
+    if (!user) return;
+    const goals = await model.loadGoals(userId);
+    const payload: points.PublicGoal[] = goals
+      .filter((g) => g.public) // a private goal never leaves this server
+      .slice(-12) // newest 12, still oldest first
+      .map((g) => ({
+        id: g.id,
+        title: g.title.slice(0, 80),
+        status: g.status,
+        brightness: Math.round(g.brightness * 100) / 100,
+        milestonesDone: g.milestones.filter((m) => m.done).length,
+        milestonesTotal: g.milestones.length,
+      }));
+    const playerId = await ensurePlayer(user);
+    if (!playerId) return; // points service offline; try again on the next trigger
+    await points.publishGoals(playerId, payload);
+  } catch (err) {
+    console.warn(`[points] syncPublicGoals failed: ${err instanceof Error ? err.message : 'error'}`);
+  }
+}
+
+/**
+ * A goal just went private: drop the legacy leaderboard goalTitle when it is
+ * that goal's title, so a private goal never stays visible over there (fail soft).
+ */
+async function clearLegacyTitle(user: User, title: string): Promise<void> {
+  try {
+    const playerId = await ensurePlayer(user);
+    if (!playerId) return;
+    const row = await points.getRow(playerId);
+    if (row?.goalTitle === title) await points.setGoalTitle(playerId, null);
+  } catch {
+    // fail soft
+  }
 }
 
 const focusSchema = z.object({
@@ -139,6 +201,13 @@ app.get('/api/users/:userId', async (req: Request, res: Response) => {
   const user = await model.getUser(userId);
   if (!user) throw new HttpError(404, 'user not found');
   const playerId = await ensurePlayer(user);
+  // Existing users get their public goals synced too — at most once per 60 s per
+  // user (in-memory timestamp), always fire and forget.
+  const last = lastPublicSyncAt.get(userId) ?? 0;
+  if (Date.now() - last >= PUBLIC_SYNC_INTERVAL_MS) {
+    lastPublicSyncAt.set(userId, Date.now());
+    void syncPublicGoals(userId);
+  }
   const [goals, stats, row, settings] = await Promise.all([
     model.loadGoals(userId),
     model.computeStats(userId),
@@ -167,6 +236,34 @@ app.put('/api/users/:userId/settings', async (req: Request, res: Response) => {
     if (playerId) void points.setGoalTitle(playerId, null);
   }
   res.json({ settings });
+});
+
+// User color: updates the local user and the points player's color (fails soft).
+app.patch('/api/users/:userId', async (req: Request, res: Response) => {
+  const { userId } = req.params as Record<string, string>;
+  const { color } = userColorSchema.parse(req.body);
+  const user = await model.getUser(userId);
+  if (!user) throw new HttpError(404, 'user not found');
+  const updated = await model.setUserColor(userId, color);
+  if (!updated) throw new HttpError(404, 'user not found');
+  const playerId = await ensurePlayer(updated); // upsert (with the new color) when they had no player yet
+  if (playerId) void points.setPlayerColor(playerId, color);
+  res.json({ user: updated });
+});
+
+// Per-goal visibility: flips one goal between public and private and republishes
+// the user's public goals to the shared cosmos (fire and forget, fails soft).
+app.patch('/api/goals/:goalId', async (req: Request, res: Response) => {
+  const { goalId } = req.params as Record<string, string>;
+  const { userId, public: isPublic } = goalVisibilitySchema.parse(req.body);
+  const user = await model.getUser(userId);
+  if (!user) throw new HttpError(404, 'user not found');
+  const goal = await model.setGoalPublic(userId, goalId, isPublic);
+  if (!goal) throw new HttpError(404, 'goal not found');
+  void syncPublicGoals(userId);
+  // A goal that just went private must not keep its title on the leaderboard either.
+  if (!isPublic) void clearLegacyTitle(user, goal.title);
+  res.json({ goal });
 });
 
 app.post('/api/chat', async (req: Request, res: Response) => {
@@ -226,6 +323,15 @@ app.post('/api/chat', async (req: Request, res: Response) => {
       if (statusBefore === 'brainstorm' && after?.status === 'ready') {
         events.push({ type: 'goal_ready', goalId: goal.id });
       }
+      // Details changed or milestones were completed/added: republish the public
+      // goals so the cosmos shows the new brightness (fire and forget).
+      if (
+        events.some(
+          (e) => e.type === 'details_updated' || e.type === 'milestone_done' || e.type === 'milestone_added'
+        )
+      ) {
+        void syncPublicGoals(userId);
+      }
     }
   } else {
     // discovering: capture the goal in one message; details come later, in that goal's chat
@@ -241,6 +347,7 @@ app.post('/api/chat', async (req: Request, res: Response) => {
         successLooksLike: '',
         deadline: null,
         milestones: [],
+        public: settings.shareGoalTitle, // "share my goals" now means: new goals are public by default
       });
       if (goal) {
         understanding = 1; // the little star is born
@@ -257,10 +364,13 @@ app.post('/api/chat', async (req: Request, res: Response) => {
             whyFilled = true;
           }
         }
-        // Share the new goal's title with the multiplayer cosmos (fails soft; never while sharing is off).
-        const share = settings.shareGoalTitle;
+        // Legacy single title for the leaderboard (fails soft; never while sharing
+        // is off or the goal is private) — the public-goals list is synced below.
+        const share = settings.shareGoalTitle && goal.public;
         const playerId = await ensurePlayer(user, share ? goal.title : undefined);
         if (playerId && share) void points.setGoalTitle(playerId, goal.title);
+        // Publish the fresh goal when it is public (fire and forget, fails soft).
+        void syncPublicGoals(user.id);
       }
     }
   }
@@ -303,6 +413,8 @@ app.post('/api/milestones/:id/toggle', async (req: Request, res: Response) => {
   const { id } = req.params as Record<string, string>;
   const goal = await model.toggleMilestone(userId, id);
   if (!goal) throw new HttpError(404, 'milestone not found');
+  // Brightness changed on the cosmos for public goals (fire and forget, fails soft).
+  void syncPublicGoals(userId);
   const stats = await model.computeStats(userId);
   res.json({ goal, stats });
 });
@@ -340,9 +452,9 @@ app.post('/api/users/:userId/active-goal', async (req: Request, res: Response) =
   if (!user) throw new HttpError(404, 'user not found');
   const goal = await model.getGoal(userId, goalId);
   if (!goal) throw new HttpError(404, 'goal not found');
-  // While shareGoalTitle is off, never send the goal title to the points service.
+  // While sharing is off or the goal is private, never send the goal title to the points service.
   const settings = await model.getSettings(userId);
-  const share = settings.shareGoalTitle;
+  const share = settings.shareGoalTitle && goal.public;
   const playerId = await ensurePlayer(user, share ? goal.title : undefined);
   if (playerId && share) await points.setGoalTitle(playerId, goal.title);
   const row = playerId ? await points.getRow(playerId) : null;
@@ -369,8 +481,8 @@ app.post('/api/focus/check', async (req: Request, res: Response) => {
     const end = new Date();
     const start = new Date(end.getTime() - sinceSeconds * 1000);
     await model.logActivity({ userId: user.id, goalId: goal.id, onTask: true, minutes: sinceSeconds / 60, source: 'desktop' });
-    // While shareGoalTitle is off, never send the goal title to the points service.
-    const share = settings.shareGoalTitle;
+    // While shareGoalTitle is off or the goal is private, never send the goal title to the points service.
+    const share = settings.shareGoalTitle && goal.public;
     const playerId = await ensurePlayer(user, share ? goal.title : undefined);
     if (playerId) {
       row = await points.reportFocus({
@@ -425,6 +537,8 @@ app.post('/api/sessions/recap', async (req: Request, res: Response) => {
     drifts: body.checks.filter((c) => c.verdict === 'off_track').length,
     headline: recap.headline,
   });
+  // A session was saved: public goals may have a new brightness (fire and forget, fails soft).
+  if (session) void syncPublicGoals(body.userId);
   res.json({
     session,
     headline: recap.headline,

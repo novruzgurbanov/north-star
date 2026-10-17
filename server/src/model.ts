@@ -88,6 +88,8 @@ export function toGoal(
   const why = String(g.why ?? '');
   const successLooksLike = String(g.successLooksLike ?? '');
   const deadline = g.deadline == null ? null : String(g.deadline);
+  // a goal without a stored `public` value (older goals, seeded cast) is public
+  const isPublic = g.public == null ? true : Boolean(g.public);
   // ready = successLooksLike non-empty AND at least one milestone
   const ready = successLooksLike.trim().length > 0 && ms.length >= 1;
   const missing: Goal['missing'] = [];
@@ -113,6 +115,7 @@ export function toGoal(
     successLooksLike,
     deadline,
     status: ready ? 'ready' : 'brainstorm',
+    public: isPublic,
     missing,
     brightness,
     createdAt: String(g.createdAt ?? ''),
@@ -186,6 +189,16 @@ export async function upsertUser(name: string): Promise<User> {
 
 export async function setPointsPlayerId(userId: string, playerId: string): Promise<void> {
   await run('MATCH (u: NSUser {id: $userId}) SET u.pointsPlayerId = $playerId', { userId, playerId });
+}
+
+/** Set a user's color (hex); returns the fresh user, or null for an unknown id. */
+export async function setUserColor(userId: string, color: string): Promise<User | null> {
+  const rows = await run(
+    'MATCH (u: NSUser {id: $userId}) SET u.color = $color RETURN u.id AS id',
+    { userId, color }
+  );
+  if (rows.length === 0) return null;
+  return getUser(userId);
 }
 
 export async function getUser(userId: string): Promise<User | null> {
@@ -353,7 +366,7 @@ export async function createGoal(userId: string, def: NewGoal): Promise<Goal | n
     `MATCH (u: NSUser {id: $userId})
      CREATE (g: NSGoal {
        id: $goalId, title: $title, why: $why, successLooksLike: $successLooksLike,
-       deadline: $deadline, createdAt: $createdAt
+       deadline: $deadline, createdAt: $createdAt, public: $isPublic
      })
      CREATE (u)-[:PURSUES]->(g)
      WITH g
@@ -371,6 +384,7 @@ export async function createGoal(userId: string, def: NewGoal): Promise<Goal | n
       why: def.why,
       successLooksLike: def.successLooksLike,
       deadline: def.deadline,
+      isPublic: def.public ?? true,
       createdAt,
       items,
     }
@@ -422,6 +436,18 @@ export async function updateGoalDetails(
      SET g.deadline = coalesce($deadline, g.deadline)
      RETURN g.id AS goalId`,
     { userId, goalId, title, why, successLooksLike, deadline }
+  );
+  if (rows.length === 0) return null; // not their goal
+  return getGoal(userId, goalId);
+}
+
+/** Set one goal's visibility; returns the fresh Goal, or null when the goal does not belong to this user. */
+export async function setGoalPublic(userId: string, goalId: string, isPublic: boolean): Promise<Goal | null> {
+  const rows = await run(
+    `MATCH (:NSUser {id: $userId})-[:PURSUES]->(g: NSGoal {id: $goalId})
+     SET g.public = $isPublic
+     RETURN g.id AS goalId`,
+    { userId, goalId, isPublic }
   );
   if (rows.length === 0) return null; // not their goal
   return getGoal(userId, goalId);

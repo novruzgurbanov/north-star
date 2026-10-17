@@ -29,6 +29,23 @@ type Row = Player & {
 }
 ```
 
+## Shared goals
+
+Each player can publish the goals they choose to make public. In the Cosmos every public goal is one star; a player's stars together are their constellation.
+
+```ts
+type PublicGoal = {
+  id: string            // the app's own goal id (unique per player)
+  title: string         // max 80 chars
+  status: 'brainstorm' | 'ready'
+  brightness: number    // 0..1
+  milestonesDone: number
+  milestonesTotal: number
+}
+```
+
+`Row` gains `goals: PublicGoal[]` (in the order they were published).
+
 ## Endpoints
 
 | Method | Path | Body | Returns |
@@ -38,6 +55,7 @@ type Row = Player & {
 | PATCH | `/v1/players/:id` | `{ goalTitle?: string \| null, color?: string }` | `{ player }` |
 | GET | `/v1/players/:id` | | `{ row }` |
 | POST | `/v1/focus` | `{ id, playerId, source, start, end, goalTitle? }` | `{ row }` (the player's fresh stats) |
+| PUT | `/v1/players/:id/goals` | `{ goals: PublicGoal[] }` (max 12) | `{ row }`. Replaces the player's whole public goal list; an empty list makes them all private. |
 | GET | `/v1/leaderboard` | | `{ rows: Row[] }`, sorted by points desc, then name |
 
 ### `POST /v1/focus` rules

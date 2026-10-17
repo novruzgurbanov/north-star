@@ -13,7 +13,15 @@ async function call<T>(path: string, body?: unknown): Promise<T> {
   return res.json() as Promise<T>
 }
 
+async function patch<T>(path: string, body: unknown): Promise<T> {
+  const res = await fetch(`/api${path}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })
+  if (!res.ok) throw new Error((await res.text().catch(() => '')) || `${res.status}`)
+  return res.json() as Promise<T>
+}
+
 export const api = {
+  setColor: (userId: string, color: string) => patch<{ user: User }>(`/users/${userId}`, { color }),
+  setGoalPublic: (userId: string, goalId: string, isPublic: boolean) => patch<{ goal: Goal }>(`/goals/${goalId}`, { userId, public: isPublic }),
   createUser: (name: string) => call<{ user: User }>('/users', { name }),
   getUser: (userId: string) =>
     call<{ user: User; goals: Goal[]; stats: Stats; points?: PointsRow | null; settings?: Settings }>(`/users/${userId}`),

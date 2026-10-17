@@ -60,7 +60,8 @@ export default function App() {
   const [toasts, setToasts] = useState<Toast[]>([])
   const [nextSteps, setNextSteps] = useState<Record<string, NextStep | 'loading'>>({})
   const [recaps, setRecaps] = useState<Record<string, Recap | 'loading' | null>>({})
-  const [panelHidden, setPanelHidden] = useState(false)
+  const [panelHidden, setPanelHidden] = useState(true)
+  const [viewport, setViewport] = useState(() => ({ w: window.innerWidth, h: window.innerHeight }))
   const [player, setPlayer] = useState<PointsRow | null>(null)
   const lastSessionEnd = useRef<string | null>(null)
   const [suggestions, setSuggestions] = useState<Record<string, string[]>>({})
@@ -172,7 +173,6 @@ export default function App() {
   const selectedGoal = goals.find(g => g.id === selected) ?? null
   const threadKey = selected ?? NEW
   const messages = threads[threadKey] ?? []
-  const focusIndex = discovering ? forgeIndex : Math.max(0, goals.findIndex(g => g.id === selected))
   const meId = user?.pointsPlayerId ?? myPoints?.id ?? null
   const myRow = leaders.find(r => r.id === meId) ?? myPoints
   const others = useMemo(
@@ -207,6 +207,7 @@ export default function App() {
         setThreads(t => ({ ...t, [created.goal.id]: withReply, [NEW]: [] }))
         setSuggestions(s => ({ ...s, [created.goal.id]: res.suggestions ?? [], [NEW]: [] }))
         setSelected(created.goal.id)
+        setPanelHidden(false)
         setTimeout(() => sound.birth(), 200)
         created.goal.milestones.forEach((_, i) => setTimeout(() => sound.twinkle(i), 200 + (1.5 + i * 0.55) * 1000))
         setTimeout(() => setUnderstanding(0), 4000)
@@ -368,6 +369,23 @@ export default function App() {
     fetchNext(selectedGoal.id)
   }, [selectedGoal?.id, selectedGoal?.status]) // eslint-disable-line react-hooks/exhaustive-deps
 
+  useEffect(() => {
+    const onResize = () => setViewport({ w: window.innerWidth, h: window.innerHeight })
+    window.addEventListener('resize', onResize)
+    return () => window.removeEventListener('resize', onResize)
+  }, [])
+
+  // The open sky between the sidebar, the goal panel / leaderboard and the chat dock; the scene centres in it.
+  const narrowScreen = viewport.w < 900
+  const navW = user && !narrowScreen ? (navCollapsed ? 60 : 244) + 12 : 0
+  const panelShown = view === 'sky' && !!selectedGoal && !discovering && !panelHidden && !narrowScreen
+  const frame = {
+    left: navW + (panelShown ? 356 : 0),
+    right: view === 'cosmos' && !narrowScreen ? 376 : 0,
+    top: 64,
+    bottom: view === 'sky' && user ? 150 : 40,
+  }
+
   const startNewStar = () => {
     setSelected(null)
     setForgeIndex(goals.length)
@@ -390,11 +408,13 @@ export default function App() {
         me={user}
         myGoals={goals}
         bornAt={bornAt}
-        focusIndex={focusIndex}
+        focusGoalId={view === 'sky' && selectedGoal && !discovering && !panelHidden ? selectedGoal.id : null}
+        forgeIndex={forgeIndex}
         discovering={discovering}
         understanding={understanding}
         view={view === 'cosmos' ? 'cosmos' : 'sky'}
-        nav={!!user && !navCollapsed}
+        frame={frame}
+        onPickGoal={id => { setSelected(id); setPanelHidden(false); setView('sky') }}
         others={others}
         myScore={myRow?.points ?? stats.score}
         focusing={focusingGoal}
@@ -424,7 +444,21 @@ export default function App() {
       )}
 
       {user && view === 'settings' && (
-        <SettingsView settings={settings} saving={settingsSaving} desktop={!!desktop} onChange={changeSettings} onClose={() => setView('sky')} />
+        <SettingsView settings={settings} saving={settingsSaving} desktop={!!desktop} onChange={changeSettings} onClose={() => setView('sky')}
+          color={color} goals={goals}
+          onColor={c => {
+            if (!user) return
+            const next = { ...user, color: c }
+            setUser(next); write('ns.user', next)
+            api.setColor(user.id, c).catch(() => toast('Could not save your color.'))
+          }}
+          onGoalPublic={(goalId, isPublic) => {
+            if (!user) return
+            setGoals(gs => gs.map(g => (g.id === goalId ? { ...g, public: isPublic } : g)))
+            api.setGoalPublic(user.id, goalId, isPublic)
+              .then(r => setGoals(gs => byCreated(gs.map(g => (g.id === r.goal.id ? r.goal : g)))))
+              .catch(() => { toast('Could not change that goal’s visibility.'); setGoals(gs => gs.map(g => (g.id === goalId ? { ...g, public: !isPublic } : g))) })
+          }} />
       )}
 
       {user && view === 'cosmos' && (

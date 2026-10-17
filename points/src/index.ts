@@ -24,7 +24,16 @@ interface Player {
   createdAt: string;
 }
 
-type Row = Player & Stats & { rank: number };
+interface PublicGoal {
+  id: string;
+  title: string;
+  status: 'brainstorm' | 'ready';
+  brightness: number;
+  milestonesDone: number;
+  milestonesTotal: number;
+}
+
+type Row = Player & Stats & { goals: PublicGoal[]; rank: number };
 
 // ---------- validation ----------
 
@@ -58,10 +67,29 @@ const focusSchema = z.object({
   goalTitle: goalTitleSchema.nullable().optional(),
 });
 
+const publicGoalSchema = z
+  .object({
+    id: z.string().trim().min(1).max(64),
+    title: z.string().trim().min(1).max(80),
+    status: z.enum(['brainstorm', 'ready']),
+    brightness: z.number().min(0).max(1),
+    milestonesDone: z.number().int().min(0).max(100),
+    milestonesTotal: z.number().int().min(0).max(100),
+  })
+  .refine(g => g.milestonesDone <= g.milestonesTotal, {
+    message: 'milestonesDone must be <= milestonesTotal',
+  });
+
+const putGoalsSchema = z.object({
+  goals: z.array(publicGoalSchema).max(12),
+});
+
 // ---------- helpers ----------
 
 const PLAYER_PROJECTION = '{.id, .name, .color, .goalTitle, .createdAt}';
 const INTERVAL_PROJECTION = '{.source, .start, .end}';
+const GOAL_PROJECTION =
+  '{.goalId, .title, .status, .brightness, .milestonesDone, .milestonesTotal, .ord}';
 
 function toPlayer(value: unknown): Player {
   const p = (value ?? {}) as Record<string, unknown>;
@@ -72,6 +100,26 @@ function toPlayer(value: unknown): Player {
     goalTitle: p.goalTitle == null ? null : String(p.goalTitle),
     createdAt: String(p.createdAt),
   };
+}
+
+/** Convert the collected PSGoal projections into PublicGoals ordered by ord. */
+function toGoals(value: unknown): PublicGoal[] {
+  const list = Array.isArray(value) ? value : [];
+  return list
+    .map((item): PublicGoal & { ord: number } => {
+      const g = (item ?? {}) as Record<string, unknown>;
+      return {
+        id: String(g.goalId),
+        title: String(g.title),
+        status: g.status === 'brainstorm' ? 'brainstorm' : 'ready',
+        brightness: Number(g.brightness),
+        milestonesDone: Number(g.milestonesDone),
+        milestonesTotal: Number(g.milestonesTotal),
+        ord: Number(g.ord),
+      };
+    })
+    .sort((a, b) => a.ord - b.ord)
+    .map(({ ord: _ord, ...goal }) => goal);
 }
 
 /** Constant-time comparison of the provided header against the shared key. */
@@ -99,12 +147,16 @@ async function loadRows(now: number, mode: Mode = 'real'): Promise<Row[]> {
     `MATCH (p:PSPlayer)
      WHERE $mode = 'demo' OR coalesce(p.seeded, false) = false
      OPTIONAL MATCH (p)-[:LOGGED]->(i:PSInterval)
-     RETURN p ${PLAYER_PROJECTION} AS player, collect(i ${INTERVAL_PROJECTION}) AS intervals`,
+     WITH p, collect(i ${INTERVAL_PROJECTION}) AS intervals
+     OPTIONAL MATCH (p)-[:SHARES]->(g:PSGoal)
+     RETURN p ${PLAYER_PROJECTION} AS player, intervals,
+            collect(g ${GOAL_PROJECTION}) AS goals`,
     { mode },
   );
   const rows = records.map(r => ({
     ...toPlayer(r.player),
     ...computeStats(r.intervals as RawInterval[], now),
+    goals: toGoals(r.goals),
   }));
   return rankRows(rows);
 }
@@ -181,6 +233,62 @@ app.patch('/v1/players/:id', async (req, res) => {
 
 app.get('/v1/players/:id', async (req, res) => {
   const id = String(req.params.id);
+  const row = await findRow(id);
+  if (!row) {
+    res.status(404).json({ error: 'player not found' });
+    return;
+  }
+  res.json({ row });
+});
+
+// Replace the player's whole public goal list in one transaction: delete the
+// existing PSGoal nodes, then create the submitted ones (ord = array index).
+app.put('/v1/players/:id/goals', async (req, res) => {
+  const body = putGoalsSchema.parse(req.body ?? {});
+  const id = String(req.params.id);
+  const seen = new Set<string>();
+  for (const goal of body.goals) {
+    if (seen.has(goal.id)) {
+      res.status(400).json({ error: `duplicate goal id: ${goal.id}` });
+      return;
+    }
+    seen.add(goal.id);
+  }
+
+  const found = await run('MATCH (p:PSPlayer {id: $id}) RETURN 1 AS found', { id });
+  if (found.length === 0) {
+    res.status(404).json({ error: 'player not found' });
+    return;
+  }
+
+  await run(
+    `MATCH (p:PSPlayer {id: $id})
+     OPTIONAL MATCH (p)-[:SHARES]->(old:PSGoal)
+     WITH p, collect(old) AS olds
+     FOREACH (o IN olds | DETACH DELETE o)
+     WITH p
+     UNWIND $goals AS g
+     MERGE (goal:PSGoal {key: p.id + ':' + g.id})
+     SET goal.goalId = g.id, goal.title = g.title, goal.status = g.status,
+         goal.brightness = g.brightness, goal.milestonesDone = g.milestonesDone,
+         goal.milestonesTotal = g.milestonesTotal, goal.ord = g.ord,
+         goal.updatedAt = $updatedAt
+     MERGE (p)-[:SHARES]->(goal)`,
+    {
+      id,
+      updatedAt: new Date().toISOString(),
+      goals: body.goals.map((goal, ord) => ({
+        id: goal.id,
+        title: goal.title,
+        status: goal.status,
+        brightness: goal.brightness,
+        milestonesDone: goal.milestonesDone,
+        milestonesTotal: goal.milestonesTotal,
+        ord,
+      })),
+    },
+  );
+
   const row = await findRow(id);
   if (!row) {
     res.status(404).json({ error: 'player not found' });

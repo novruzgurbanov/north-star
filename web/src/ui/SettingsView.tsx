@@ -1,5 +1,5 @@
 import type { ReactNode } from 'react'
-import type { Settings } from '../types'
+import type { Goal, Settings } from '../types'
 
 type Props = {
   settings: Settings
@@ -7,6 +7,10 @@ type Props = {
   desktop: boolean
   onChange: (patch: Partial<Settings>) => void
   onClose: () => void
+  color: string
+  goals: Goal[]
+  onColor: (color: string) => void
+  onGoalPublic: (goalId: string, isPublic: boolean) => void
 }
 
 // Check-interval stops: fine-grained at the low end, where it matters.
@@ -65,7 +69,9 @@ const ROAST_HINT: Record<Settings['roast'], string> = {
   spicy: 'Sharper and more sarcastic. Still PG, never about you personally.',
 }
 
-export function SettingsView({ settings, saving, desktop, onChange, onClose }: Props) {
+const PALETTE = ['#8ecbff', '#a7c4ff', '#c9a7ff', '#ff9ec4', '#ffb38a', '#ffd59e', '#fff3b0', '#9effd8', '#7ee0ff', '#ff8a8a', '#d0ff8a', '#f2f2f7']
+
+export function SettingsView({ settings, saving, desktop, onChange, onClose, color, goals, onColor, onGoalPublic }: Props) {
   const stopIndex = Math.max(0, CHECK_STOPS.findIndex(s => s >= settings.checkSeconds))
   return (
     <div className="page">
@@ -121,12 +127,36 @@ export function SettingsView({ settings, saving, desktop, onChange, onClose }: P
       </div>
 
       <div className="settings-group">
-        <h3 className="settings-label">Interface and privacy</h3>
+        <h3 className="settings-label">You</h3>
+        <Row title="Your color" hint="Your stars, your constellation and your dot on the leaderboard.">
+          <div className="swatches" role="radiogroup" aria-label="Your color">
+            {PALETTE.map(c => (
+              <button key={c} role="radio" aria-checked={c.toLowerCase() === color.toLowerCase()} aria-label={c}
+                className={`swatch ${c.toLowerCase() === color.toLowerCase() ? 'is-active' : ''}`} style={{ ['--sw' as string]: c }} onClick={() => onColor(c)} />
+            ))}
+          </div>
+        </Row>
+      </div>
+
+      <div className="settings-group">
+        <h3 className="settings-label">Goal visibility</h3>
+        <Row title="New goals are public" hint="Public goals show as stars in your constellation in the Cosmos. Private goals stay on this machine.">
+          <Toggle label="New goals are public" checked={settings.shareGoalTitle} onChange={v => onChange({ shareGoalTitle: v })} />
+        </Row>
+        {goals.map(g => (
+          <Row key={g.id} title={g.title} hint={g.public === false ? 'Private: only you can see it.' : 'Public: shown in the Cosmos with its progress.'}>
+            <div className="seg seg-small" role="radiogroup" aria-label={`Visibility of ${g.title}`}>
+              <button role="radio" aria-checked={g.public !== false} className={g.public !== false ? 'is-active' : ''} onClick={() => onGoalPublic(g.id, true)}>Public</button>
+              <button role="radio" aria-checked={g.public === false} className={g.public === false ? 'is-active' : ''} onClick={() => onGoalPublic(g.id, false)}>Private</button>
+            </div>
+          </Row>
+        ))}
+      </div>
+
+      <div className="settings-group">
+        <h3 className="settings-label">Interface</h3>
         <Row title="Sounds" hint="The chime when a star is born and the soft ding when one lights up.">
           <Toggle label="Sounds" checked={settings.sounds} onChange={v => onChange({ sounds: v })} />
-        </Row>
-        <Row title="Show my goal in the Cosmos" hint="Shares your goal’s title on the leaderboard. Points are always shared.">
-          <Toggle label="Show my goal in the Cosmos" checked={settings.shareGoalTitle} onChange={v => onChange({ shareGoalTitle: v })} />
         </Row>
       </div>
     </section>

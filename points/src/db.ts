@@ -15,6 +15,7 @@ const CONSTRAINTS = [
   'CREATE CONSTRAINT ps_player_id IF NOT EXISTS FOR (p:PSPlayer) REQUIRE p.id IS UNIQUE',
   'CREATE CONSTRAINT ps_player_name IF NOT EXISTS FOR (p:PSPlayer) REQUIRE p.nameLower IS UNIQUE',
   'CREATE CONSTRAINT ps_interval_id IF NOT EXISTS FOR (i:PSInterval) REQUIRE i.id IS UNIQUE',
+  'CREATE CONSTRAINT ps_goal_key IF NOT EXISTS FOR (g:PSGoal) REQUIRE g.key IS UNIQUE',
 ];
 
 /** Create the service's unique constraints. Safe to run on every boot. */

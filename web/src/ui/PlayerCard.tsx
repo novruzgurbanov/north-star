@@ -37,7 +37,24 @@ export function PlayerCard({ player, you, onClose }: { player: PointsRow; you: b
 
       <div className="pc-goal">
         <div className="gp-label">Working toward</div>
-        {player.goalTitle ? <p className="gp-quote">“{player.goalTitle}”</p> : <p className="gp-text">They keep their goal private.</p>}
+        {player.goals && player.goals.length > 0 ? (
+          <ul className="pc-goals">
+            {player.goals.map(g => (
+              <li key={g.id} className="pc-goal-row">
+                <span className="pc-goal-star" style={{ opacity: 0.4 + g.brightness * 0.6 }} aria-hidden />
+                <span className="pc-goal-text">
+                  <span className="pc-goal-title">{g.title}</span>
+                  <span className="pc-goal-meta mono">
+                    {g.status === 'brainstorm' ? 'Brainstorm' : g.milestonesTotal ? `${g.milestonesDone} of ${g.milestonesTotal} milestones lit` : 'Ready'}
+                  </span>
+                </span>
+                {g.milestonesTotal > 0 && (
+                  <span className="pc-goal-bar" aria-hidden><span style={{ width: `${(g.milestonesDone / g.milestonesTotal) * 100}%` }} /></span>
+                )}
+              </li>
+            ))}
+          </ul>
+        ) : player.goalTitle ? <p className="gp-quote">“{player.goalTitle}”</p> : <p className="gp-text">Their goals are private.</p>}
       </div>
 
       <div className="pc-stats">

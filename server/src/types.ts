@@ -36,6 +36,7 @@ export type Goal = {
   successLooksLike: string;
   deadline: string | null;
   status: 'brainstorm' | 'ready'; // ready = successLooksLike non-empty AND milestones.length >= 1
+  public: boolean; // public goals are published to the shared cosmos; missing stored value -> true
   missing: Array<'success' | 'steps' | 'why'>; // the details still empty, in that order
   brightness: number; // 0..1; brainstorm stars 0.12 + 0.04 per filled detail, ready goals 0.25+
   createdAt: string; // ISO
@@ -109,4 +110,6 @@ export type NewGoal = {
   successLooksLike: string;
   deadline: string | null;
   milestones: string[];
+  /** New goals are public by default (settings.shareGoalTitle); omitted -> true. */
+  public?: boolean;
 };
