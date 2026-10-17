@@ -6,6 +6,7 @@ type Props = {
   saving: boolean
   desktop: boolean
   onChange: (patch: Partial<Settings>) => void
+  onClose: () => void
 }
 
 // Check-interval stops: fine-grained at the low end, where it matters.
@@ -64,7 +65,7 @@ const ROAST_HINT: Record<Settings['roast'], string> = {
   spicy: 'Sharper and more sarcastic. Still PG, never about you personally.',
 }
 
-export function SettingsView({ settings, saving, desktop, onChange }: Props) {
+export function SettingsView({ settings, saving, desktop, onChange, onClose }: Props) {
   const stopIndex = Math.max(0, CHECK_STOPS.findIndex(s => s >= settings.checkSeconds))
   return (
     <div className="page">
@@ -74,7 +75,12 @@ export function SettingsView({ settings, saving, desktop, onChange }: Props) {
           <div className="eyebrow">Settings</div>
           <h2 className="panel-title">How North Star works with you</h2>
         </div>
-        <span className={`settings-saved ${saving ? 'is-saving' : ''}`}>{saving ? 'Saving…' : 'Saved'}</span>
+        <div className="settings-actions">
+          <span className={`settings-saved ${saving ? 'is-saving' : ''}`}>{saving ? 'Saving…' : 'Saved'}</span>
+          <button className="icon-btn" onClick={onClose} aria-label="Close settings" title="Close (Esc)">
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" aria-hidden><path d="M6 6l12 12M18 6L6 18" /></svg>
+          </button>
+        </div>
       </header>
 
       <div className="settings-group">

@@ -1,8 +1,8 @@
 :root {
   --bg: #020309;
   --text: rgba(236, 241, 255, 0.94);
-  --muted: rgba(196, 207, 235, 0.62);
-  --faint: rgba(196, 207, 235, 0.36);
+  --muted: rgba(205, 215, 240, 0.72);
+  --faint: rgba(196, 207, 235, 0.5);
   --stroke: rgba(255, 255, 255, 0.08);
   --stroke-strong: rgba(255, 255, 255, 0.16);
   --glass-fill: rgba(12, 15, 28, 0.42);
@@ -85,7 +85,7 @@ button:disabled { cursor: default; }
   display: flex; flex-direction: column; gap: 12px; max-height: calc(100vh - 100px);
 }
 
-.panel { border-radius: 22px; padding: 22px 22px 18px; overflow-y: auto; animation: rise .7s var(--ease) both; }
+.panel { border-radius: 22px; padding: 22px 22px 18px; overflow-y: auto; animation: materialize .55s var(--ease) both; }
 .goal-panel { scrollbar-width: none; }
 .eyebrow { font-family: var(--mono); font-size: 10.5px; letter-spacing: 0.16em; text-transform: uppercase; color: var(--faint); }
 .panel-title { font-family: var(--serif); font-weight: 400; font-size: 30px; line-height: 1.08; margin: 8px 0 8px; letter-spacing: -0.005em; }
@@ -393,7 +393,7 @@ button:disabled { cursor: default; }
   display: flex; justify-content: center; overflow-y: auto; scrollbar-width: none; padding: 52px 0 24px;
 }
 .page::-webkit-scrollbar { display: none; }
-.settings { width: min(720px, 100%); height: max-content; border-radius: 24px; padding: 26px 28px 12px; animation: rise .6s var(--ease) both; }
+.settings { width: min(720px, 100%); height: max-content; border-radius: 24px; padding: 26px 28px 12px; animation: materialize .5s var(--ease) both; }
 .settings-head { display: flex; justify-content: space-between; align-items: flex-start; gap: 16px; margin-bottom: 8px; }
 .settings-saved { font-family: var(--mono); font-size: 11px; color: var(--faint); padding-top: 4px; transition: color .2s var(--ease); }
 .settings-saved.is-saving { color: var(--me); }
@@ -495,9 +495,15 @@ button:disabled { cursor: default; }
 
 /* Toasts */
 .toasts { position: absolute; top: 76px; left: 50%; transform: translateX(-50%); z-index: 40; display: flex; flex-direction: column; gap: 8px; align-items: center; pointer-events: none; }
-.toast { padding: 9px 16px; border-radius: 999px; font-size: 13px; color: var(--text); animation: rise .5s var(--ease) both, fade-out .5s ease 3.1s forwards; }
+.toast { padding: 9px 16px; border-radius: 999px; font-size: 13px; color: var(--text); animation: drop .45s var(--ease) both, fade-out .5s ease 3.1s forwards; }
 
 @keyframes rise { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: none; } }
+/* Glass surfaces materialize: blur and scale arrive together, not just a fade. */
+@keyframes materialize {
+  from { opacity: 0; transform: scale(0.97) translateY(6px); filter: blur(8px); }
+  to { opacity: 1; transform: none; filter: none; }
+}
+@keyframes drop { from { opacity: 0; transform: translateY(-8px); } to { opacity: 1; transform: none; } }
 @keyframes twinkle { 0%, 100% { opacity: .2; } 50% { opacity: .9; } }
 @keyframes fade-out { to { opacity: 0; } }
 
@@ -511,6 +517,38 @@ button:disabled { cursor: default; }
   .hide-narrow { display: none; }
   .dock { bottom: 16px; }
   .cosmos-caption { font-size: 16px; bottom: 18px; }
+}
+
+
+/* Response: every control answers on press, not on release. */
+button:not(:disabled):active { transform: scale(0.97); transition: transform 90ms ease-out; }
+.nav-goal:not(:disabled):active, .nav-views button:active, .detail-add:active, .milestone:not(:disabled):active { transform: scale(0.985); }
+
+/* Material hierarchy: the sidebar is structure (heavier, darker); panels are content; chips are lighter and interactive. */
+.nav.glass {
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.04), rgba(255, 255, 255, 0.01) 50%), rgba(6, 8, 16, 0.66);
+  backdrop-filter: blur(28px) saturate(140%); -webkit-backdrop-filter: blur(28px) saturate(140%);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.06), 0 30px 80px -30px rgba(0, 0, 0, 0.85);
+}
+.panel.glass, .settings.glass { box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.08), 0 28px 70px -28px rgba(0, 0, 0, 0.8); }
+.suggestion, .segmented.glass, .me.glass { backdrop-filter: blur(14px) saturate(160%); -webkit-backdrop-filter: blur(14px) saturate(160%); }
+
+/* Vibrancy: small labels over moving, blurred stars get a touch more weight. */
+.eyebrow, .nav-label, .settings-label, .progress-head, .known-kind { font-weight: 500; }
+
+.detail-more {
+  align-self: flex-start; margin: 2px 0 0; padding: 6px 0; border: 0; background: transparent;
+  color: var(--faint); font-size: 13px; text-decoration: underline; text-decoration-color: rgba(255,255,255,0.15); text-underline-offset: 3px;
+}
+.detail-more:hover { color: var(--text); }
+.settings-actions { display: flex; align-items: center; gap: 6px; }
+
+@media (prefers-reduced-transparency: reduce) {
+  .glass, .nav.glass, .suggestion, .msg-user p, .star-label { background: #0b0e1a; backdrop-filter: none; -webkit-backdrop-filter: none; }
+}
+@media (prefers-contrast: more) {
+  :root { --muted: rgba(230, 236, 255, 0.9); --faint: rgba(220, 228, 255, 0.75); --stroke: rgba(255, 255, 255, 0.28); --stroke-strong: rgba(255, 255, 255, 0.45); }
+  .glass { background: rgba(8, 10, 20, 0.92); }
 }
 
 @media (prefers-reduced-motion: reduce) {

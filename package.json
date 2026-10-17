@@ -9,7 +9,8 @@
     "desktop": "concurrently --kill-others-on-fail -n points,api,web,app -c yellow,magenta,cyan,green \"npm --prefix points run dev\" \"npm --prefix server run dev\" \"npm --prefix web run dev\" \"wait-on http://localhost:5173 && npm --prefix desktop start\"",
     "tunnel": "node scripts/tunnel.mjs",
     "app": "npm --prefix desktop start",
-    "join": "concurrently --kill-others-on-fail -n api,web,app -c magenta,cyan,green \"npm --prefix server run dev\" \"npm --prefix web run dev\" \"wait-on http://localhost:5173 && npm --prefix desktop start\""
+    "join": "concurrently --kill-others-on-fail -n api,web,app -c magenta,cyan,green \"npm --prefix server run dev\" \"npm --prefix web run dev\" \"wait-on http://localhost:5173 && npm --prefix desktop start\"",
+    "key": "node scripts/copy-points-key.mjs"
   },
   "devDependencies": {
     "concurrently": "^10.0.6",

@@ -66,25 +66,29 @@ function Nebula() {
   )
 }
 
+const reducedMotion = typeof window !== 'undefined' && window.matchMedia?.('(prefers-reduced-motion: reduce)').matches
+
 function CameraRig({ view, focus, panel, nav }: { view: View; focus: Vec3; panel: boolean; nav: boolean }) {
   const { camera, size } = useThree()
   const look = useRef(new THREE.Vector3(...focus))
   const target = useMemo(() => new THREE.Vector3(), [])
   const lookTarget = useMemo(() => new THREE.Vector3(), [])
   useFrame((state, dt) => {
-    const t = state.clock.elapsedTime
+    const t = reducedMotion ? 0 : state.clock.elapsedTime
+    const px = reducedMotion ? 0 : state.pointer.x
+    const py = reducedMotion ? 0 : state.pointer.y
     const narrow = size.width < 760
     if (view === 'sky') {
       // Frame the star in the open sky: above the chat dock, and right of the goal panel when it is shown.
       const dist = narrow ? 30 : 24
       const shiftX = narrow ? 0 : (panel ? -6.5 : 0) + (nav ? -2.4 : 0)
       const shiftY = narrow ? -5 : -3
-      target.set(focus[0] + shiftX + state.pointer.x * 1.4, focus[1] + 1.4 + shiftY + state.pointer.y * 0.9, focus[2] + dist)
+      target.set(focus[0] + shiftX + px * 1.4, focus[1] + 1.4 + shiftY + py * 0.9, focus[2] + dist)
       lookTarget.set(focus[0] + shiftX, focus[1] + shiftY, focus[2])
     } else {
       const a = t * 0.03
       const dist = narrow ? 150 : 108
-      target.set(Math.sin(a) * dist + state.pointer.x * 8, 46 + state.pointer.y * 6, Math.cos(a) * dist)
+      target.set(Math.sin(a) * dist + px * 8, 46 + py * 6, Math.cos(a) * dist)
       lookTarget.set(0, -4, 0)
     }
     const k = 1 - Math.exp(-dt * (view === 'sky' ? 1.5 : 0.9))

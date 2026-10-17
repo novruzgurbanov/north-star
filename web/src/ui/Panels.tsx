@@ -12,9 +12,11 @@ export function TopBar({ user, stats, points, view, onView, onMenu }: {
   return (
     <header className="topbar">
       {user ? (
-        <button className="menu-btn glass" onClick={onMenu} aria-label="Open navigation">
-          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" aria-hidden><path d="M4 7h16M4 12h16M4 17h10" /></svg>
-        </button>
+        <span className="topbar-lead">
+          <button className="menu-btn glass" onClick={onMenu} aria-label="Open navigation">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" aria-hidden><path d="M4 7h16M4 12h16M4 17h10" /></svg>
+          </button>
+        </span>
       ) : (
         <div className="brand">
           <span className="brand-mark"><Spark size={15} /></span>
@@ -63,6 +65,7 @@ export function GoalPanel({ goal, color, onToggle, focus, onAsk }: {
   const details = (goal.details ?? []).filter(d => !(d.kind === 'motivation' && d.text === goal.why))
   const extras = EXTRA_PROMPTS.filter(p => !(goal.details ?? []).some(d => d.kind === p.kind))
   const [pending, setPending] = useState<string | null>(null)
+  const [showMore, setShowMore] = useState(false)
   const ms = [...goal.milestones].sort((a, b) => a.order - b.order)
   const done = ms.filter(m => m.done).length
   const nextId = ms.find(m => !m.done)?.id
@@ -99,11 +102,13 @@ export function GoalPanel({ goal, color, onToggle, focus, onAsk }: {
               <Plus size={12} /> {DETAIL_PROMPTS[m].label}
             </button>
           ))}
-          {extras.map(p => (
-            <button key={p.kind} className="detail-add" onClick={() => onAsk(p.ask)}>
-              <Plus size={12} /> {p.label}
-            </button>
-          ))}
+          {extras.length > 0 && (missing.length === 0 || showMore
+            ? extras.map(p => (
+              <button key={p.kind} className="detail-add" onClick={() => onAsk(p.ask)}>
+                <Plus size={12} /> {p.label}
+              </button>
+            ))
+            : <button className="detail-more" onClick={() => setShowMore(true)}>More details…</button>)}
         </div>
       )}
 

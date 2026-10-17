@@ -235,13 +235,23 @@ export default function App() {
   const toggleMilestone = async (milestoneId: string) => {
     if (!user) return
     sound.unlock()
+    // Flip it on screen immediately; the server answer reconciles (or rolls back) a moment later.
+    const before = goals
+    const owner = goals.find(g => g.milestones.some(m => m.id === milestoneId))
+    const target = owner?.milestones.find(m => m.id === milestoneId)
+    if (owner && target) {
+      const done = !target.done
+      setGoals(gs => gs.map(g => g.id !== owner.id ? g : {
+        ...g, milestones: g.milestones.map(m => m.id === milestoneId ? { ...m, done, brightness: done ? 1 : 0.18 } : m),
+      }))
+      if (done) sound.twinkle(target.order, true)
+    }
     try {
       const res = await api.toggleMilestone(user.id, milestoneId)
       setGoals(gs => byCreated(gs.map(g => (g.id === res.goal.id ? res.goal : g))))
       setStats(res.stats)
-      const m = res.goal.milestones.find(x => x.id === milestoneId)
-      if (m?.done) sound.twinkle(m.order, true)
     } catch {
+      setGoals(before)
       toast('Could not update that milestone.')
     }
   }
@@ -288,6 +298,12 @@ export default function App() {
   }
 
   useEffect(() => { sound.setEnabled(settings.sounds) }, [settings.sounds])
+  useEffect(() => {
+    if (view !== 'settings') return
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') setView('sky') }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [view])
   useEffect(() => {
     void desktop?.focus.configure?.({ checkSeconds: settings.checkSeconds, notifications: settings.notifications })
       .then(setFocus).catch(() => {})
@@ -342,7 +358,7 @@ export default function App() {
       )}
 
       {user && view === 'settings' && (
-        <SettingsView settings={settings} saving={settingsSaving} desktop={!!desktop} onChange={changeSettings} />
+        <SettingsView settings={settings} saving={settingsSaving} desktop={!!desktop} onChange={changeSettings} onClose={() => setView('sky')} />
       )}
 
       {user && view === 'cosmos' && (
