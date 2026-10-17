@@ -132,7 +132,9 @@ function CameraRig({ home, frame, autoRotate }: { home: Home; frame: Frame; auto
     const wheel = (e: WheelEvent) => {
       e.preventDefault()
       st.idleSince = performance.now()
-      st.zoomTarget = rubberband(st.zoomTarget * Math.exp(e.deltaY * 0.0011), 0.3, 3.2, 0.4)
+      // ~30% per wheel notch; line-based wheels (deltaMode 1) report rows, not pixels.
+      const delta = e.deltaMode === 1 ? e.deltaY * 33 : e.deltaY
+      st.zoomTarget = rubberband(st.zoomTarget * Math.exp(delta * 0.0026), 0.3, 3.2, 0.4)
     }
     const dbl = () => { st.yaw = 0; st.pitch = home.pitch; st.zoomTarget = 1; st.pan.set(0, 0, 0); st.velYaw = 0; st.velPitch = 0 }
     const menu = (e: MouseEvent) => e.preventDefault()
@@ -170,7 +172,7 @@ function CameraRig({ home, frame, autoRotate }: { home: Home; frame: Frame; auto
       st.zoomTarget += (Math.min(3.2, Math.max(0.3, st.zoomTarget)) - st.zoomTarget) * (1 - Math.exp(-dt * 10))
       if (autoRotate && !reducedMotion && performance.now() - st.idleSince > 4000) st.yaw += dt * 0.03
     }
-    st.zoom += (st.zoomTarget - st.zoom) * (1 - Math.exp(-dt * 9))
+    st.zoom += (st.zoomTarget - st.zoom) * (1 - Math.exp(-dt * 12))
     st.center.lerp(new THREE.Vector3(...home.center), k)
     st.distance += (home.distance - st.distance) * k
 
