@@ -266,6 +266,21 @@ app.patch('/api/goals/:goalId', async (req: Request, res: Response) => {
   res.json({ goal });
 });
 
+// Delete a goal (and its milestones, details and sessions). Verified focus time and points stay.
+app.delete('/api/goals/:goalId', async (req: Request, res: Response) => {
+  const { goalId } = req.params as Record<string, string>;
+  const { userId } = z.object({ userId: z.string().min(1) }).parse(req.body);
+  const user = await model.getUser(userId);
+  if (!user) throw new HttpError(404, 'user not found');
+  const goal = await model.getGoal(userId, goalId);
+  if (!goal) throw new HttpError(404, 'goal not found');
+  await model.deleteGoal(userId, goalId);
+  void syncPublicGoals(userId);
+  void clearLegacyTitle(user, goal.title);
+  const [goals, stats] = await Promise.all([model.loadGoals(userId), model.computeStats(userId)]);
+  res.json({ goals, stats });
+});
+
 app.post('/api/chat', async (req: Request, res: Response) => {
   const { userId, goalId, messages } = chatSchema.parse(req.body);
   const user = await model.getUser(userId);

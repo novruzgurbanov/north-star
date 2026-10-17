@@ -822,3 +822,14 @@ button:not(:disabled):active { transform: scale(0.97); transition: transform 90m
 }
 .forge-scrim.is-on { opacity: 1; backdrop-filter: blur(14px) saturate(120%); -webkit-backdrop-filter: blur(14px) saturate(120%); }
 @media (prefers-reduced-transparency: reduce) { .forge-scrim.is-on { backdrop-filter: none; -webkit-backdrop-filter: none; background: rgba(2, 3, 9, 0.85); } }
+
+/* Deleting a goal: quiet until asked, explicit once confirming */
+.danger-zone { margin-top: 22px; padding-top: 12px; border-top: 1px solid var(--stroke); }
+.danger-link { border: 0; background: transparent; padding: 4px 0; font-size: 12.5px; color: var(--faint); transition: color .2s var(--ease); }
+.danger-link:hover { color: #ff9eb0; }
+.danger-zone.is-confirming { display: flex; flex-direction: column; gap: 10px; }
+.danger-text { margin: 0; font-size: 13px; line-height: 1.5; color: var(--muted); }
+.danger-btn { flex: 1; padding: 10px 14px; border-radius: 12px; border: 1px solid rgba(255, 143, 163, 0.45);
+  background: rgba(255, 107, 129, 0.16); color: #ffd2da; font-size: 13.5px; font-weight: 500; transition: background .2s var(--ease); }
+.danger-btn:hover:not(:disabled) { background: rgba(255, 107, 129, 0.26); }
+.danger-btn:disabled { opacity: 0.6; }

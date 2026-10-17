@@ -661,6 +661,26 @@ export async function deleteNonSeededUsersByName(name: string): Promise<number> 
   return ids.length;
 }
 
+/**
+ * Delete one of the user's goals with its milestones, details and sessions. Focus activity
+ * stays (detached) so the user's verified time and streak are not rewritten. Returns false if
+ * the goal is not theirs.
+ */
+export async function deleteGoal(userId: string, goalId: string): Promise<boolean> {
+  const rows = await run(
+    `MATCH (:NSUser {id: $userId})-[:PURSUES]->(g: NSGoal {id: $goalId})
+     OPTIONAL MATCH (g)-[:HAS_MILESTONE]->(m: NSMilestone)
+     OPTIONAL MATCH (g)-[:HAS_DETAIL]->(d: NSDetail)
+     OPTIONAL MATCH (g)-[:HAD_SESSION]->(s: NSSession)
+     WITH g, collect(DISTINCT m) + collect(DISTINCT d) + collect(DISTINCT s) AS parts
+     FOREACH (x IN parts | DETACH DELETE x)
+     DETACH DELETE g
+     RETURN 1 AS deleted`,
+    { userId, goalId }
+  );
+  return rows.length > 0;
+}
+
 export async function deleteUserCascade(userIds: string[]): Promise<void> {
   if (userIds.length === 0) return;
   await run(

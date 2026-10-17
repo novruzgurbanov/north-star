@@ -21,6 +21,11 @@ async function patch<T>(path: string, body: unknown): Promise<T> {
 
 export const api = {
   setColor: (userId: string, color: string) => patch<{ user: User }>(`/users/${userId}`, { color }),
+  deleteGoal: async (userId: string, goalId: string) => {
+    const res = await fetch(`/api/goals/${goalId}`, { method: 'DELETE', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ userId }) })
+    if (!res.ok) throw new Error((await res.text().catch(() => '')) || `${res.status}`)
+    return res.json() as Promise<{ goals: Goal[]; stats: Stats }>
+  },
   setGoalPublic: (userId: string, goalId: string, isPublic: boolean) => patch<{ goal: Goal }>(`/goals/${goalId}`, { userId, public: isPublic }),
   createUser: (name: string) => call<{ user: User }>('/users', { name }),
   getUser: (userId: string) =>

@@ -397,6 +397,27 @@ export default function App() {
     bottom: view === 'sky' && user ? 150 : 40,
   }
 
+  const deleteGoal = async (goal: Goal) => {
+    if (!user) return
+    if (focus && focus.status !== 'idle' && focus.goalId === goal.id) await desktop?.focus.stop().catch(() => null)
+    try {
+      const res = await api.deleteGoal(user.id, goal.id)
+      applyGoals(res.goals)
+      setStats(res.stats)
+      setThreads(t => { const copy = { ...t }; delete copy[goal.id]; return copy })
+      setNextSteps(n => { const copy = { ...n }; delete copy[goal.id]; return copy })
+      setRecaps(r => { const copy = { ...r }; delete copy[goal.id]; return copy })
+      // Back to the overview of what is left, or to the new-star screen if nothing is.
+      const rest = byCreated(res.goals)
+      setSelected(rest.length ? rest[rest.length - 1].id : null)
+      setForgeIndex(rest.length)
+      setPanelHidden(true)
+      toast(`“${goal.title}” was deleted.`)
+    } catch {
+      toast('Could not delete that star.')
+    }
+  }
+
   const startNewStar = () => {
     setSelected(null)
     setForgeIndex(goals.length)
@@ -453,7 +474,8 @@ export default function App() {
       {user && view === 'sky' && selectedGoal && !discovering && !panelHidden && (
         <div className="left-column">
           <GoalPanel key={selectedGoal.id} goal={selectedGoal} color={color} onToggle={toggleMilestone} dock={sessionDock(selectedGoal)}
-            focusing={focusingGoal === selectedGoal.id} onAsk={text => { if (!busy) void send(text) }} />
+            focusing={focusingGoal === selectedGoal.id} onAsk={text => { if (!busy) void send(text) }}
+            onDelete={() => deleteGoal(selectedGoal)} />
         </div>
       )}
 

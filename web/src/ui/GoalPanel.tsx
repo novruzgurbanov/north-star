@@ -11,6 +11,7 @@ type Props = {
   focusing: boolean
   onToggle: (milestoneId: string) => void
   onAsk: (text: string) => void
+  onDelete: () => Promise<void>
 }
 
 const PROMPTS = {
@@ -77,7 +78,9 @@ function readCollapsed() {
   try { return localStorage.getItem('ns.panelCollapsed') === '1' } catch { return false }
 }
 
-export function GoalPanel({ goal, color, dock, focusing, onToggle, onAsk }: Props) {
+export function GoalPanel({ goal, color, dock, focusing, onToggle, onAsk, onDelete }: Props) {
+  const [confirmDelete, setConfirmDelete] = useState(false)
+  const [deleting, setDeleting] = useState(false)
   const little = goal.status === 'brainstorm'
   const [tab, setTab] = useState<Tab>(little ? 'about' : 'plan')
   const [collapsed, setCollapsed] = useState(readCollapsed)
@@ -210,6 +213,23 @@ export function GoalPanel({ goal, color, dock, focusing, onToggle, onAsk }: Prop
                     ? <div className="details">{aboutExtras.map(k => <AddRow key={k} label={PROMPTS[k].label} onClick={() => onAsk(PROMPTS[k].ask)} />)}</div>
                     : <button className="detail-more" onClick={() => setMoreAbout(true)}>More details…</button>
                 )}
+
+                <div className={`danger-zone ${confirmDelete ? 'is-confirming' : ''}`}>
+                  {confirmDelete ? (
+                    <>
+                      <p className="danger-text">Delete “{goal.title}” with its milestones, details and sessions? This can’t be undone. Your verified focus time and points stay.</p>
+                      <div className="dock-actions">
+                        <button className="danger-btn" disabled={deleting}
+                          onClick={async () => { setDeleting(true); try { await onDelete() } finally { setDeleting(false) } }}>
+                          {deleting ? 'Deleting…' : 'Delete star'}
+                        </button>
+                        <button className="ghost ghost-quiet" onClick={() => setConfirmDelete(false)} disabled={deleting}>Cancel</button>
+                      </div>
+                    </>
+                  ) : (
+                    <button className="danger-link" onClick={() => setConfirmDelete(true)}>Delete this star…</button>
+                  )}
+                </div>
               </div>
             )}
           </div>
