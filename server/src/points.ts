@@ -34,7 +34,7 @@ export interface PublicGoal {
   milestonesTotal: number;
 }
 
-const BASE = (process.env.POINTS_URL || 'http://localhost:8788').replace(/\/+$/, '');
+const BASE = (process.env.POINTS_URL || 'http://localhost:8888').replace(/\/+$/, ''); // v2's points service; v1 keeps 8788
 const KEY = process.env.POINTS_KEY || '';
 
 async function call<T>(op: string, method: string, path: string, body?: unknown): Promise<T | null> {
@@ -101,6 +101,24 @@ export async function reportFocus(input: {
     goalTitle: input.goalTitle?.slice(0, 80),
   });
   return res?.row ?? null;
+}
+
+/** The points service rejects intervals shorter than this (and longer than 15 minutes). */
+const MIN_INTERVAL_MS = 5_000;
+
+/**
+ * Split the `minutes` ending at `end` into back-to-back intervals of equal length, at
+ * most `maxMinutes` each, oldest first. Equal parts keep every chunk at least 5 s long
+ * (15.05 min is 2 x 7.5 min, not 15 min + 3 s); a total under 5 s is not reported.
+ */
+export function splitInterval(end: string, minutes: number, maxMinutes = 15): Array<{ start: string; end: string }> {
+  const endMs = Date.parse(end);
+  const totalMs = Math.round(minutes * 60_000);
+  if (!Number.isFinite(endMs) || !(totalMs >= MIN_INTERVAL_MS)) return [];
+  const parts = Math.ceil(totalMs / (maxMinutes * 60_000));
+  const startMs = endMs - totalMs;
+  const at = (i: number) => new Date(startMs + Math.round((i * totalMs) / parts)).toISOString();
+  return Array.from({ length: parts }, (_, i) => ({ start: at(i), end: at(i + 1) }));
 }
 
 /** 'real' = only people who actually connected; 'demo' also shows the seeded cast. */

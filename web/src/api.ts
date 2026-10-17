@@ -1,4 +1,22 @@
-import type { ChatMessage, ChatResponse, Goal, NextStep, PointsRow, Recap, Settings, Stats, User } from './types'
+import type { ChatMessage, ChatResponse, Entry, EntryValues, Goal, NextStep, PointsRow, Recap, Settings, Stats, User, WidgetOp } from './types'
+
+/** An API failure that keeps the HTTP status, so callers can tell "nothing to undo" (409) from a real error. */
+export class ApiError extends Error {
+  status: number
+  constructor(message: string, status: number) { super(message); this.status = status }
+}
+
+async function send<T>(method: 'POST' | 'PATCH' | 'DELETE', path: string, body: unknown): Promise<T> {
+  const res = await fetch(`/api${path}`, { method, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })
+  if (!res.ok) {
+    // The server answers errors as { error: message }; keep that message, or the raw text if it isn't JSON.
+    const text = await res.text().catch(() => '')
+    let message = text
+    try { message = (JSON.parse(text) as { error?: string }).error || text } catch { /* not JSON */ }
+    throw new ApiError(message || `${res.status} ${res.statusText}`, res.status)
+  }
+  return res.json() as Promise<T>
+}
 
 async function call<T>(path: string, body?: unknown): Promise<T> {
   const res = await fetch(`/api${path}`, {
@@ -60,4 +78,18 @@ export const api = {
     verifiedSeconds: number; completed: boolean; checks: { at: string; verdict: string; reason: string }[]
   }) => call<Recap>('/sessions/recap', body),
   leaderboard: (mode: 'real' | 'demo' = 'real') => call<{ rows: PointsRow[]; offline: boolean }>(`/leaderboard?mode=${mode}`),
+
+  // v2: AI-built goal panels (PANELS.md section 2)
+  designPanel: (userId: string, goalId: string, instruction?: string) =>
+    send<{ goal: Goal }>('POST', `/goals/${goalId}/panel/design`, instruction ? { userId, instruction } : { userId }),
+  editPanel: (userId: string, goalId: string, instruction: string) =>
+    send<{ goal: Goal; change: string }>('POST', `/goals/${goalId}/panel/edit`, { userId, instruction }),
+  undoPanel: (userId: string, goalId: string) => send<{ goal: Goal }>('POST', `/goals/${goalId}/panel/undo`, { userId }),
+  widgetOp: (userId: string, goalId: string, widgetId: string, op: WidgetOp) =>
+    send<{ goal: Goal }>('PATCH', `/goals/${goalId}/panel/widgets/${widgetId}`, { userId, op }),
+  /** `proof` is a base64 JPEG without the data-URL prefix (same as focus checks). */
+  createEntry: (userId: string, goalId: string, body: { widgetId: string; values: EntryValues; note?: string; proof?: string }) =>
+    send<{ entry: Entry; goal: Goal; stats: Stats; points: PointsRow | null }>('POST', `/goals/${goalId}/entries`, { userId, ...body }),
+  deleteEntry: (userId: string, goalId: string, entryId: string) =>
+    send<{ goal: Goal; stats: Stats }>('DELETE', `/goals/${goalId}/entries/${entryId}`, { userId }),
 }

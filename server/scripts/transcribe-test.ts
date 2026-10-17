@@ -8,7 +8,7 @@
  * (defaults to scripts/sample.wav)
  */
 
-const BASE = process.env.PORT ? `http://localhost:${process.env.PORT}` : 'http://localhost:8787';
+const BASE = process.env.PORT ? `http://localhost:${process.env.PORT}` : 'http://localhost:8887';
 const TARGET_RATE = 16000;
 
 type ParsedWav = { channels: number; sampleRate: number; samples: Float32Array };

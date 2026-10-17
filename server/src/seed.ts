@@ -331,6 +331,11 @@ async function deleteSeeded(): Promise<void> {
     `MATCH (:NSUser {seeded: true})-[:PURSUES]->(g: NSGoal)-[:HAS_MILESTONE]->(m: NSMilestone)
      DETACH DELETE m`
   );
+  // Details, sessions and v2 entries go with their goal too (DETACH alone would orphan them).
+  await run(
+    `MATCH (:NSUser {seeded: true})-[:PURSUES]->(g: NSGoal)-[:HAS_DETAIL|HAD_SESSION|HAS_ENTRY]->(x)
+     DETACH DELETE x`
+  );
   await run(
     `MATCH (:NSUser {seeded: true})-[:PURSUES]->(g: NSGoal)
      DETACH DELETE g`

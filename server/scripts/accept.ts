@@ -1,5 +1,5 @@
 /**
- * Acceptance checks against a running server on :8787 (start it with `npm start`).
+ * Acceptance checks against a running v2 server on :8887 (start it with `npm start`).
  * Exercises every endpoint end-to-end, including a real multi-turn discover
  * conversation that births a goal, then deletes all test data it created.
  *
@@ -8,7 +8,7 @@
 import { close } from '../src/db.js';
 import { deleteNonSeededUsersByName } from '../src/model.js';
 
-const BASE = process.env.PORT ? `http://localhost:${process.env.PORT}` : 'http://localhost:8787';
+const BASE = process.env.PORT ? `http://localhost:${process.env.PORT}` : 'http://localhost:8887';
 
 let failures = 0;
 function check(ok: boolean, label: string, detail = ''): void {

@@ -54,6 +54,7 @@ export function Sidebar({ user, goals, selected, discovering, focusingGoalId, vi
         <div className="nav-brand">
           <span className="brand-mark"><Spark size={15} /></span>
           <span className="brand-name nav-text">North Star</span>
+          <span className="v2-badge nav-text" title="North Star v2: panels built for each goal">v2</span>
           <button className="nav-collapse" onClick={onCollapse} aria-label={collapsed ? 'Expand sidebar' : 'Collapse sidebar'}
             title={collapsed ? 'Expand sidebar' : 'Collapse sidebar'} aria-expanded={!collapsed}>
             <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden

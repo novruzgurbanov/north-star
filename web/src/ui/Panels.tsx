@@ -21,6 +21,7 @@ export function TopBar({ user, stats, points, view, onView, onMenu }: {
         <div className="brand">
           <span className="brand-mark"><Spark size={15} /></span>
           <span className="brand-name">North Star</span>
+          <span className="v2-badge" title="North Star v2: panels built for each goal">v2</span>
         </div>
       )}
       {user ? (

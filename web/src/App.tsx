@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { api } from './api'
+import { api, ApiError } from './api'
 import { sound } from './sound'
-import { DEFAULT_SETTINGS, type ChatMessage, type FocusState, type Goal, type NextStep, type PointsRow, type Recap, type Settings, type Stats, type User } from './types'
+import { DEFAULT_SETTINGS, type ChatMessage, type EntryValues, type FocusState, type Goal, type NextStep, type PointsRow, type Recap, type Settings, type Stats, type User, type WidgetOp } from './types'
 import { Universe } from './scene/Universe'
 import { Sidebar, type View } from './ui/Sidebar'
 import { SettingsView } from './ui/SettingsView'
@@ -10,6 +10,8 @@ import { Leaderboard, Onboarding, TopBar } from './ui/Panels'
 import { GoalPanel } from './ui/GoalPanel'
 import { SessionDock } from './ui/SessionDock'
 import { PlayerCard } from './ui/PlayerCard'
+import type { TrackHandlers } from './ui/PanelTrack'
+import { applyWidgetOp, describeValues, logWidget } from './ui/widgets/data'
 
 const desktop = typeof window !== 'undefined' ? window.northStarDesktop : undefined
 
@@ -29,9 +31,58 @@ function write(key: string, value: unknown) {
 }
 
 const byCreated = (goals: Goal[]) => [...goals].sort((a, b) => a.createdAt.localeCompare(b.createdAt))
+// The session lengths a goal's panel offers in its focus widget, if it has one.
+const panelDurations = (goal: Goal) => {
+  const w = goal.panel?.widgets.find(x => x.type === 'focus_session')
+  return w?.type === 'focus_session' ? w.minutes : undefined
+}
 const nowSec = () => performance.now() / 1000
 
-type Toast = { id: number; text: string }
+type ToastAction = { label: string; run: () => void }
+type Toast = { id: number; text: string; action?: ToastAction }
+
+// How long a toast stays: plain, with an action (Undo), and after an action toast is let go (matches .is-resumed).
+const TOAST_MS = 3600
+const TOAST_ACTION_MS = 6600
+const TOAST_RESUME_MS = 3000
+
+/**
+ * One toast. A toast with an action holds still while it is pointed at or has keyboard focus (no timeout,
+ * no fade), so its action can always be reached; once let go it fades out a few seconds later.
+ */
+function ToastView({ toast, onHold, onAction }: { toast: Toast; onHold: (held: boolean) => void; onAction: () => void }) {
+  const [mode, setMode] = useState<'' | 'is-held' | 'is-resumed'>('')
+  const over = useRef({ pointer: false, focus: false, closed: false })
+  // Where focus was before it came into the toast; it goes back there when the toast closes under it.
+  const cameFrom = useRef<HTMLElement | null>(null)
+  const hold = (patch: Partial<{ pointer: boolean; focus: boolean }>) => {
+    if (over.current.closed) return // its action ran; App already dropped it
+    const before = over.current.pointer || over.current.focus
+    over.current = { ...over.current, ...patch }
+    const held = over.current.pointer || over.current.focus
+    if (held === before) return
+    onHold(held)
+    setMode(held ? 'is-held' : 'is-resumed')
+  }
+  if (!toast.action) return <div className="toast glass">{toast.text}</div>
+  return (
+    <div className={`toast glass has-action ${mode}`}
+      onPointerEnter={() => hold({ pointer: true })} onPointerLeave={() => hold({ pointer: false })}
+      onFocus={e => {
+        if (!over.current.focus) cameFrom.current = e.relatedTarget instanceof HTMLElement ? e.relatedTarget : null
+        hold({ focus: true })
+      }}
+      onBlur={e => { if (!e.currentTarget.contains(e.relatedTarget as Node | null)) hold({ focus: false }) }}>
+      {toast.text}
+      <button className="toast-action" onClick={e => {
+        const back = e.currentTarget === document.activeElement ? cameFrom.current : null
+        over.current.closed = true
+        onAction()
+        if (back?.isConnected) back.focus()
+      }}>{toast.action.label}</button>
+    </div>
+  )
+}
 
 export default function App() {
   const [user, setUser] = useState<User | null>(() => read<User | null>('ns.user', null))
@@ -67,12 +118,43 @@ export default function App() {
   const lastSessionEnd = useRef<string | null>(null)
   const [suggestions, setSuggestions] = useState<Record<string, string[]>>({})
   const busyRef = useRef(false)
+  // v2 panels: first designs in flight per goal, and a guard so background refreshes never undo a fresher panel edit.
+  const [designs, setDesigns] = useState<Record<string, 'working' | 'failed'>>({})
+  const designAsked = useRef(new Set<string>())
+  const panelBusy = useRef(0)
+  const panelSeq = useRef(0)
+  const opSeq = useRef<Record<string, number>>({})
+  const panelQueue = useRef<Record<string, Promise<unknown>>>({})
+  // Panel versions where the server said there is nothing to undo; the "Undo last change" link hides there.
+  const [noUndo, setNoUndo] = useState<Record<string, number>>({})
+  // The latest goals, for callbacks that outlive their render (a toast's Undo runs seconds later).
+  const goalsRef = useRef(goals)
+  goalsRef.current = goals
 
-  const toast = useCallback((text: string) => {
-    const id = Date.now() + Math.random()
-    setToasts(t => [...t, { id, text }])
-    setTimeout(() => setToasts(t => t.filter(x => x.id !== id)), 3600)
+  const toastTimers = useRef(new Map<number, ReturnType<typeof setTimeout>>())
+  const dropToast = useCallback((id: number) => {
+    clearTimeout(toastTimers.current.get(id))
+    toastTimers.current.delete(id)
+    setToasts(t => t.filter(x => x.id !== id))
   }, [])
+  const dropToastIn = useCallback((id: number, ms: number) => {
+    clearTimeout(toastTimers.current.get(id))
+    toastTimers.current.set(id, setTimeout(() => dropToast(id), ms))
+  }, [dropToast])
+
+  // A toast with an action (Undo) stays a little longer and can be clicked.
+  const toast = useCallback((text: string, action?: ToastAction) => {
+    const id = Date.now() + Math.random()
+    setToasts(t => [...t, { id, text, action }])
+    dropToastIn(id, action ? TOAST_ACTION_MS : TOAST_MS)
+  }, [dropToastIn])
+
+  // While an action toast is held it has no timer; let go, it gets a fresh short one.
+  const holdToast = (id: number, held: boolean) => {
+    if (!held) return dropToastIn(id, TOAST_RESUME_MS)
+    clearTimeout(toastTimers.current.get(id))
+    toastTimers.current.delete(id)
+  }
 
   const applyGoals = useCallback((next: Goal[]) => setGoals(byCreated(next)), [])
 
@@ -128,8 +210,10 @@ export default function App() {
   useEffect(() => {
     if (!user) return
     const id = setInterval(() => {
-      if (busyRef.current) return
+      if (busyRef.current || panelBusy.current > 0) return
+      const seq = panelSeq.current
       api.getUser(user.id).then(res => {
+        if (seq !== panelSeq.current) return // a panel change landed while this was in flight; this copy is older
         applyGoals(res.goals)
         setStats(res.stats)
         if (res.points !== undefined) setMyPoints(res.points)
@@ -203,6 +287,9 @@ export default function App() {
     try {
       const res = await api.chat(user.id, msgs, goalId)
       const withReply: ChatMessage[] = [...msgs, { role: 'assistant', content: res.reply }]
+      // The reply's goals are read after every coach action, so they are the freshest copy: a background
+      // refresh already in flight must not land on top of them.
+      panelSeq.current++
       applyGoals(res.goals)
       setStats(res.stats)
 
@@ -242,7 +329,18 @@ export default function App() {
           setTimeout(() => sound.twinkle(4 + i), 120 * i)
         } else if (e.type === 'goal_ready') {
           setTimeout(() => sound.birth(), 300)
-          toast('Your star is ready. Begin a focus session whenever you are.')
+          toast('Your star is ready. Next: a panel to track it.')
+        } else if (e.type === 'entry_logged') {
+          setTimeout(() => sound.twinkle(3 + i), 150 * i)
+          const owner = res.goals.find(g => g.id === e.goalId)
+          const log = owner ? logWidget(owner, e.entry.widgetId) : null
+          const what = log ? describeValues(log.fields, e.entry.values) : ''
+          toast(`Logged${log ? ` in “${log.title}”` : ''}${what ? `: ${what}` : ''}`)
+        } else if (e.type === 'panel_updated') {
+          // e.goal is a snapshot from right after the edit; res.goals (applied above) also has the entries
+          // and milestones from any actions that came after it in the same reply.
+          setTimeout(() => sound.twinkle(4 + i), 150 * i)
+          toast(e.change || 'Your panel was updated.', undoAction(e.goalId))
         }
       })
     } catch {
@@ -252,6 +350,148 @@ export default function App() {
       busyRef.current = false
     }
   }
+
+  // ---------- v2: AI-built goal panels (PANELS.md) ----------
+
+  /** Swaps in a fresher copy of one goal returned by a panel or entry call. */
+  const putGoal = (goal: Goal) => {
+    panelSeq.current++
+    setGoals(gs => byCreated(gs.map(g => (g.id === goal.id ? goal : g))))
+  }
+
+  /** Runs a panel request while holding off the background refresh (its older copy would undo this change). */
+  async function panelCall<T>(run: () => Promise<T>): Promise<T> {
+    panelBusy.current++
+    panelSeq.current++
+    try { return await run() } finally { panelBusy.current--; panelSeq.current++ }
+  }
+
+  /**
+   * Runs a request that rewrites a goal's panel after the ones already sent for that goal have finished.
+   * The server reads the spec, changes it and saves it whole, so two at once would each save over the other.
+   */
+  function queuePanel<T>(goalId: string, run: () => Promise<T>): Promise<T> {
+    const before = panelQueue.current[goalId] ?? Promise.resolve()
+    const next = panelCall(() => before.catch(() => {}).then(run))
+    panelQueue.current[goalId] = next
+    return next
+  }
+  // Each queued write gets a number; only the latest one's reply is applied (or, if it fails, refreshes),
+  // since earlier replies don't know about the writes queued after them.
+  const nextOp = (goalId: string) => (opSeq.current[goalId] = (opSeq.current[goalId] ?? 0) + 1)
+  const isLatest = (goalId: string, n: number) => opSeq.current[goalId] === n
+
+  // After a failed manual edit, take the server's word for what the panel looks like.
+  const refreshGoals = () => {
+    if (!user) return
+    api.getUser(user.id).then(res => { panelSeq.current++; applyGoals(res.goals); setStats(res.stats) }).catch(() => {})
+  }
+
+  // Asked once per goal; a failure shows a retry instead of asking again on every render.
+  const designPanel = (goalId: string, retry = false) => {
+    if (!user || (designAsked.current.has(goalId) && !retry)) return
+    designAsked.current.add(goalId)
+    setDesigns(d => ({ ...d, [goalId]: 'working' }))
+    panelCall(() => api.designPanel(user.id, goalId))
+      .then(res => {
+        putGoal(res.goal)
+        setDesigns(d => { const copy = { ...d }; delete copy[goalId]; return copy })
+        // A soft chime for each card as it materializes.
+        res.goal.panel?.widgets.slice(0, 5).forEach((_, i) => setTimeout(() => sound.twinkle(i), 140 + i * 90))
+      })
+      .catch(() => setDesigns(d => ({ ...d, [goalId]: 'failed' })))
+  }
+
+  const undoPanel = (goalId: string) => {
+    if (!user) return
+    const version = goalsRef.current.find(g => g.id === goalId)?.panel?.version ?? 0
+    const n = nextOp(goalId)
+    queuePanel(goalId, () => api.undoPanel(user.id, goalId))
+      .then(res => { if (isLatest(goalId, n)) putGoal(res.goal); toast('Panel restored.') })
+      .catch(err => {
+        const empty = err instanceof ApiError && err.status === 409
+        if (empty) setNoUndo(nu => ({ ...nu, [goalId]: version }))
+        toast(empty ? 'Nothing left to undo.' : 'Could not undo that change.')
+        if (isLatest(goalId, n)) refreshGoals()
+      })
+  }
+  const undoAction = (goalId: string): ToastAction => ({ label: 'Undo', run: () => undoPanel(goalId) })
+
+  const editPanel = async (goalId: string, instruction: string) => {
+    if (!user) return false
+    const n = nextOp(goalId)
+    try {
+      const res = await queuePanel(goalId, () => api.editPanel(user.id, goalId, instruction))
+      if (isLatest(goalId, n)) putGoal(res.goal)
+      sound.twinkle(4)
+      toast(res.change || 'Your panel was updated.', undoAction(goalId))
+      return true
+    } catch {
+      toast('Could not change the panel. Try again.')
+      if (isLatest(goalId, n)) refreshGoals()
+      return false
+    }
+  }
+
+  // Manual edits show at once (on the latest state, so quick edits stack) and reach the server one at a time.
+  // Only the latest reply for a goal is applied, so quick moves don't flicker back.
+  const widgetOp = (goalId: string, widgetId: string, op: WidgetOp) => {
+    if (!user) return
+    const title = goalsRef.current.find(g => g.id === goalId)?.panel?.widgets.find(w => w.id === widgetId)?.title ?? 'card'
+    const n = nextOp(goalId)
+    panelSeq.current++
+    setGoals(gs => gs.map(g => (g.id === goalId && g.panel ? { ...g, panel: applyWidgetOp(g.panel, widgetId, op) } : g)))
+    if (op.kind === 'toggle_item') sound.tick()
+    queuePanel(goalId, () => api.widgetOp(user.id, goalId, widgetId, op))
+      .then(res => {
+        if (isLatest(goalId, n)) putGoal(res.goal)
+        if (op.kind === 'remove') toast(`Removed “${title}”.`, undoAction(goalId)) // layout edits are undoable too
+      })
+      .catch(() => {
+        toast('Could not change that card.')
+        if (isLatest(goalId, n)) refreshGoals()
+      })
+  }
+
+  const logEntry = async (goalId: string, widgetId: string, values: EntryValues, proof?: string) => {
+    if (!user) throw new Error('Not signed in')
+    sound.unlock()
+    const res = await panelCall(() => api.createEntry(user.id, goalId, { widgetId, values, proof }))
+    putGoal(res.goal)
+    setStats(res.stats)
+    if (res.points) setMyPoints(res.points)
+    const verified = res.entry.proof === 'verified'
+    sound.twinkle(verified ? 4 : 2, verified)
+    return res.entry
+  }
+
+  const deleteEntry = async (goalId: string, entryId: string) => {
+    if (!user) return
+    panelSeq.current++
+    setGoals(gs => gs.map(g => (g.id === goalId ? { ...g, entries: (g.entries ?? []).filter(e => e.id !== entryId) } : g)))
+    try {
+      const res = await panelCall(() => api.deleteEntry(user.id, goalId, entryId))
+      putGoal(res.goal)
+      setStats(res.stats)
+    } catch {
+      toast('Could not delete that entry.')
+      refreshGoals()
+    }
+  }
+
+  const trackFor = (goal: Goal): TrackHandlers => ({
+    design: designs[goal.id] ?? null,
+    next: nextSteps[goal.id] ?? null,
+    onRedesign: () => designPanel(goal.id, true),
+    onEdit: instruction => editPanel(goal.id, instruction),
+    // Any change after the first design may be undoable; the server's 409 hides the link at that version.
+    canUndo: !!goal.panel && goal.panel.version > 1 && noUndo[goal.id] !== goal.panel.version,
+    onUndo: () => undoPanel(goal.id),
+    onOp: (widgetId, op) => widgetOp(goal.id, widgetId, op),
+    onLog: (widgetId, values, proof) => logEntry(goal.id, widgetId, values, proof),
+    onDeleteEntry: entryId => deleteEntry(goal.id, entryId),
+    onRefreshNext: () => fetchNext(goal.id, true),
+  })
 
   const toggleMilestone = async (milestoneId: string) => {
     if (!user) return
@@ -294,6 +534,7 @@ export default function App() {
       camera={focus?.status && focus.status !== 'idle' ? focus.cameraEnabled : useCamera}
       next={nextSteps[goal.id] ?? null}
       recap={recaps[goal.id] ?? null}
+      durations={panelDurations(goal)}
       onCamera={enabled => {
         setUseCamera(enabled)
         if (focus && focus.status !== 'idle') void desktop?.focus.setCamera(enabled).then(setFocus)
@@ -372,6 +613,13 @@ export default function App() {
   useEffect(() => {
     if (overview) { setThreads(t => (t[NEW]?.length ? { ...t, [NEW]: [] } : t)); setSuggestions(s => ({ ...s, [NEW]: [] })) }
   }, [overview])
+
+  // A ready star without a panel gets one designed the first time its panel is opened.
+  const goalPanelOpen = view === 'sky' && !!selectedGoal && !discovering && !panelHidden
+  useEffect(() => {
+    if (!goalPanelOpen || !selectedGoal || selectedGoal.status === 'brainstorm' || selectedGoal.panel) return
+    designPanel(selectedGoal.id)
+  }, [goalPanelOpen, selectedGoal?.id, selectedGoal?.status, !!selectedGoal?.panel]) // eslint-disable-line react-hooks/exhaustive-deps
 
   // Suggest the next task as soon as a ready star is open and nothing is running on it.
   useEffect(() => {
@@ -474,7 +722,9 @@ export default function App() {
       {user && view === 'sky' && selectedGoal && !discovering && !panelHidden && (
         <div className="left-column">
           <GoalPanel key={selectedGoal.id} goal={selectedGoal} color={color} onToggle={toggleMilestone} dock={sessionDock(selectedGoal)}
-            focusing={focusingGoal === selectedGoal.id} onAsk={text => { if (!busy) void send(text) }}
+            focusing={focusingGoal === selectedGoal.id}
+            sessionHere={!!focus && focus.status !== 'idle' && focus.goalId === selectedGoal.id} hasRecap={!!recaps[selectedGoal.id]}
+            onAsk={text => { if (!busy) void send(text) }} track={trackFor(selectedGoal)}
             onDelete={() => deleteGoal(selectedGoal)} />
         </div>
       )}
@@ -525,7 +775,10 @@ export default function App() {
       {!user && <Onboarding onSubmit={createUser} />}
 
       <div className="toasts" aria-live="polite">
-        {toasts.map(t => <div key={t.id} className="toast glass">{t.text}</div>)}
+        {toasts.map(t => (
+          <ToastView key={t.id} toast={t} onHold={held => holdToast(t.id, held)}
+            onAction={() => { dropToast(t.id); t.action?.run() }} />
+        ))}
       </div>
     </div>
   )

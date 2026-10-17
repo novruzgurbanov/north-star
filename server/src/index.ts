@@ -3,13 +3,14 @@ import cors from 'cors';
 import express, { type NextFunction, type Request, type Response } from 'express';
 import { z } from 'zod';
 import { initConstraints, run } from './db.js';
-import { capture, checkFocus, coach, nextStep, recapSession, type CoachAction } from './agent.js';
+import { capture, checkFocus, coach, designPanel, editPanel, judgeProof, nextStep, recapSession, type CoachAction } from './agent.js';
 import * as points from './points.js';
 import { nanoid } from 'nanoid';
 import * as model from './model.js';
+import { cleanText, entryMinutes, logWidgets, validateEntryValues } from './panel.js';
 import { getStatus, transcribe, warmUp } from './transcribe.js';
 import { COUNT_CONFIDENCE, NOTIFY_ABOVE } from './types.js';
-import type { AgentEvent, ChatMessage, Goal, Milestone, Stats, User } from './types.js';
+import type { AgentEvent, ChatMessage, Entry, Goal, Milestone, PanelSpec, ProofVerdict, Settings, Stats, User } from './types.js';
 
 class HttpError extends Error {
   status: number;
@@ -305,6 +306,8 @@ app.post('/api/chat', async (req: Request, res: Response) => {
     const result = await coach(goal, stats, messages as ChatMessage[], settings);
     reply = result.reply;
     suggestions = result.suggestions;
+    const entryMinutesLogged: number[] = []; // minutes of the entries stored this turn
+    const focusActions: CoachAction[] = []; // applied after the entries (below)
     for (const action of result.actions) {
       if (action.type === 'set_details') {
         if (action.why) whyEmpty = false;
@@ -327,6 +330,37 @@ app.post('/api/chat', async (req: Request, res: Response) => {
             whyEmpty = false;
           }
         }
+        continue;
+      }
+      if (action.type === 'log_entry') {
+        // "I ran 5 km in 31 minutes": a self-reported entry on the panel's log
+        const event = await logEntryFromChat(userId, goal.id, action);
+        if (event) {
+          events.push(event);
+          if (event.type === 'entry_logged') entryMinutesLogged.push(event.entry.minutes);
+        }
+        continue;
+      }
+      if (action.type === 'log_focus') {
+        focusActions.push(action);
+        continue;
+      }
+      if (action.type === 'edit_panel' && action.instruction) {
+        // "add a chart for my km": the panel editor rewrites the spec
+        const event = await editPanelFromChat(userId, goal.id, action.instruction, settings);
+        if (event) events.push(event);
+        continue;
+      }
+      const event = await applyCoachAction(userId, goal.id, action);
+      if (event) events.push(event);
+    }
+    // Focus time the coach logged for an activity it also stored as an entry (same minutes)
+    // is the same time twice: skip that one. Any other focus time counts, also when an
+    // entry turned out invalid and was never stored.
+    for (const action of focusActions) {
+      const same = entryMinutesLogged.findIndex((m) => m > 0 && Math.round(m) === clampMinutes(action.minutes));
+      if (same >= 0) {
+        entryMinutesLogged.splice(same, 1);
         continue;
       }
       const event = await applyCoachAction(userId, goal.id, action);
@@ -564,6 +598,300 @@ app.post('/api/sessions/recap', async (req: Request, res: Response) => {
   });
 });
 
+// ---------------------------------------------------------------------------
+// Goal panels and entries (../PANELS.md). The AI writes a declarative spec that
+// src/panel.ts sanitizes; nothing the AI writes is ever executed.
+// ---------------------------------------------------------------------------
+
+const panelDesignSchema = z.object({
+  userId: z.string().min(1, 'userId is required'),
+  instruction: z.string().trim().max(300, 'instruction must be at most 300 chars').optional(),
+});
+
+const panelEditSchema = z.object({
+  userId: z.string().min(1, 'userId is required'),
+  instruction: z.string().trim().min(1, 'instruction is required').max(300, 'instruction must be at most 300 chars'),
+});
+
+const widgetOpSchema = z.object({
+  userId: z.string().min(1, 'userId is required'),
+  op: z.discriminatedUnion('kind', [
+    z.object({ kind: z.literal('remove') }),
+    z.object({
+      kind: z.literal('move'),
+      to: z.number().int({ message: 'to must be an integer' }).min(0, { message: 'to must be at least 0' }).max(50),
+    }),
+    z.object({ kind: z.literal('toggle_item'), itemId: z.string().min(1, 'itemId is required').max(40) }),
+  ]),
+});
+
+const entrySchema = z.object({
+  userId: z.string().min(1, 'userId is required'),
+  widgetId: z.string().min(1, 'widgetId is required').max(40),
+  values: z.record(z.string().max(40), z.union([z.number(), z.string().max(400), z.boolean(), z.null()])),
+  note: z.string().max(300, 'note must be at most 300 chars').optional(),
+  proof: z.string().max(6_000_000, 'proof image is too large').nullable().optional(), // base64 JPEG/PNG
+});
+
+const MAX_PROOF_BYTES = 4 * 1024 * 1024;
+const PNG_MAGIC = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+
+/** A base64 JPEG or PNG (raw or data URL, <= 4 MB) -> a data URL with the right type. Never logged. */
+function proofDataUrl(raw: string): { url: string } | { error: string } {
+  const match = /^data:image\/(?:jpeg|jpg|png);base64,/i.exec(raw);
+  const b64 = (match ? raw.slice(match[0].length) : raw).replace(/\s+/g, '');
+  if (!b64 || !/^[A-Za-z0-9+/]+={0,2}$/.test(b64)) return { error: 'proof must be a base64 JPEG or PNG' };
+  const bytes = Buffer.from(b64, 'base64');
+  if (bytes.length > MAX_PROOF_BYTES) return { error: 'proof image must be at most 4 MB' };
+  const isJpeg = bytes.length > 3 && bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff;
+  const isPng = bytes.length > 8 && bytes.subarray(0, 8).equals(PNG_MAGIC);
+  if (!isJpeg && !isPng) return { error: 'proof must be a base64 JPEG or PNG' };
+  return { url: `data:image/${isPng ? 'png' : 'jpeg'};base64,${b64}` };
+}
+
+/** The user and their goal, or a 404 (every panel route checks ownership). */
+async function userGoal(userId: string, goalId: string): Promise<{ user: User; goal: Goal }> {
+  const user = await model.getUser(userId);
+  if (!user) throw new HttpError(404, 'user not found');
+  const goal = await model.getGoal(userId, goalId);
+  if (!goal) throw new HttpError(404, 'goal not found');
+  return { user, goal };
+}
+
+type PanelChange = { spec: PanelSpec; change: string };
+
+/** The editor rewrites the panel (or, when the goal has none yet, the designer builds one following the instruction). */
+async function rewritePanel(goal: Goal, instruction: string, settings: Settings): Promise<PanelChange | null> {
+  if (!goal.panel) {
+    const { spec } = await designPanel(goal, settings, instruction);
+    return { spec, change: 'Designed a panel for this goal.' };
+  }
+  return editPanel(goal.panel, goal, instruction, settings);
+}
+
+/**
+ * Make an AI change to the goal's panel and save it onto the spec it was built from. The
+ * AI takes seconds: when the panel changed meanwhile (a move, a remove, another window),
+ * the change is made once more on the fresh panel; ticked checklist items alone don't
+ * count, they are carried over. Returns the fresh goal and change, 'failed' when the AI
+ * gave nothing usable, 'conflict' when the panel moved under it twice, null when the
+ * goal is gone.
+ */
+async function changePanel(
+  userId: string,
+  goal: Goal,
+  make: (goal: Goal) => Promise<PanelChange | null>
+): Promise<{ goal: Goal; change: string } | 'failed' | 'conflict' | null> {
+  let current: Goal | null = goal;
+  for (let attempt = 0; attempt < 2; attempt++) {
+    if (attempt > 0) current = await model.getGoal(userId, goal.id);
+    if (!current) return null;
+    const result = await make(current);
+    if (!result) return 'failed';
+    const saved = await model.savePanel(userId, goal.id, result.spec, current.panel);
+    if (saved === null) return null;
+    if (saved !== 'conflict') return { goal: saved, change: result.change };
+  }
+  return 'conflict';
+}
+
+/** changePanel's outcome as the route's answer (or the HTTP error). */
+function panelChanged(
+  result: { goal: Goal; change: string } | 'failed' | 'conflict' | null,
+  failed: string
+): { goal: Goal; change: string } {
+  if (result === null) throw new HttpError(404, 'goal not found');
+  if (result === 'failed') throw new HttpError(502, failed);
+  if (result === 'conflict') throw new HttpError(409, 'Your panel changed while I was working on it. Try again.');
+  return result;
+}
+
+// A check-in's minutes are typed by the user and its photo can be sent again, so verified
+// check-ins count toward score and the leaderboard up to these limits (../PANELS.md).
+const CHECKIN_ENTRY_MAX_MINUTES = 180; // per entry
+const CHECKIN_DAY_MAX_MINUTES = 240; // per user, in any 24 hours
+
+/**
+ * A verified entry with minutes counts like verified focus: an NSActivity (source
+ * 'checkin', so the star brightens) and the time reported to the points service as
+ * intervals of at most 15 minutes ending at the entry time, both within the check-in
+ * caps above. Self-reported, unverified and rejected entries count only on the goal's
+ * own widgets. Private goals (or sharing off) never send the title. Returns the fresh
+ * points row, null when offline.
+ */
+async function countVerifiedEntry(user: User, goal: Goal, entry: Entry): Promise<points.PointsRow | null> {
+  const counted =
+    entry.proof === 'verified' && entry.minutes > 0
+      ? await model.logCheckin(user.id, goal.id, Math.min(entry.minutes, CHECKIN_ENTRY_MAX_MINUTES), CHECKIN_DAY_MAX_MINUTES)
+      : 0;
+  if (counted <= 0) {
+    return user.pointsPlayerId ? points.getRow(user.pointsPlayerId) : null;
+  }
+  const settings = await model.getSettings(user.id);
+  const share = settings.shareGoalTitle && goal.public;
+  const playerId = await ensurePlayer(user, share ? goal.title : undefined);
+  let row: points.PointsRow | null = null;
+  if (playerId) {
+    for (const interval of points.splitInterval(entry.at, counted)) {
+      const next = await points.reportFocus({
+        id: nanoid(), playerId, start: interval.start, end: interval.end,
+        goalTitle: share ? goal.title : undefined,
+      });
+      if (!next) break; // offline: don't wait out a timeout per chunk
+      row = next;
+    }
+  }
+  void syncPublicGoals(user.id); // brightness changed (fire and forget)
+  return row;
+}
+
+/** Coach log_entry: a self-reported entry (proof 'none') on one of the panel's logs. */
+async function logEntryFromChat(userId: string, goalId: string, action: CoachAction): Promise<AgentEvent | null> {
+  const goal = await model.getGoal(userId, goalId); // fresh: an earlier action may have edited the panel
+  const log = logWidgets(goal?.panel ?? null).find((l) => l.id === action.widgetId);
+  if (!goal || !log) return null;
+  const checked = validateEntryValues(log, action.values ?? {}, true); // lenient: "5 km" -> 5
+  if (!checked.ok) return null;
+  const entry = await model.addEntry(userId, goalId, {
+    widgetId: log.id,
+    values: checked.values,
+    note: '',
+    minutes: entryMinutes(log, checked.values),
+    proof: 'none',
+    proofReason: '',
+  });
+  return entry ? { type: 'entry_logged', goalId, entry } : null;
+}
+
+/** Coach edit_panel: rewrite the panel and report it as panel_updated. */
+async function editPanelFromChat(
+  userId: string,
+  goalId: string,
+  instruction: string,
+  settings: Settings
+): Promise<AgentEvent | null> {
+  const goal = await model.getGoal(userId, goalId);
+  if (!goal) return null;
+  const result = await changePanel(userId, goal, (g) => rewritePanel(g, instruction, settings));
+  return result && typeof result === 'object' ? { type: 'panel_updated', goalId, goal: result.goal, change: result.change } : null;
+}
+
+const describeSpec = (spec: PanelSpec | null | undefined): string =>
+  spec ? `${spec.profile}: ${spec.widgets.map((w) => w.type).join(', ')}` : '(none)';
+
+// Design a panel from scratch. The web UI calls this the first time it opens a ready goal
+// without one, perhaps from two windows at once; with an instruction it is a redesign.
+app.post('/api/goals/:goalId/panel/design', async (req: Request, res: Response) => {
+  const { goalId } = req.params as Record<string, string>;
+  const { userId, instruction } = panelDesignSchema.parse(req.body);
+  const { goal } = await userGoal(userId, goalId);
+  // Without an instruction an existing panel is never replaced (it holds the user's entries and ticks).
+  if (goal.panel && !instruction) {
+    res.json({ goal });
+    return;
+  }
+  const settings = await model.getSettings(userId);
+  if (!instruction) {
+    const { spec, ai } = await designPanel(goal, settings);
+    const saved = await model.savePanel(userId, goalId, spec, null);
+    // 'conflict': another window designed this goal meanwhile; that panel stays.
+    const fresh = saved === 'conflict' ? await model.getGoal(userId, goalId) : saved;
+    if (!fresh) throw new HttpError(404, 'goal not found');
+    if (saved !== 'conflict') console.log(`[panel] designed ${describeSpec(spec)}${ai ? '' : ' (fallback)'}`);
+    res.json({ goal: fresh });
+    return;
+  }
+  // A redesign in words: logs that record the same activity keep their ids, ticks carry over,
+  // and an existing panel is only ever replaced by the AI's own design, never a default one.
+  const result = await changePanel(userId, goal, async (g) => {
+    const { spec, ai } = await designPanel(g, settings, instruction);
+    return g.panel && !ai ? null : { spec, change: '' };
+  });
+  const { goal: fresh } = panelChanged(result, "Couldn't redesign the panel this time. Try again.");
+  console.log(`[panel] redesigned ${describeSpec(fresh.panel)}`);
+  res.json({ goal: fresh });
+});
+
+// Change the panel in words ("add a weekly km chart"); the previous spec stays undoable.
+app.post('/api/goals/:goalId/panel/edit', async (req: Request, res: Response) => {
+  const { goalId } = req.params as Record<string, string>;
+  const { userId, instruction } = panelEditSchema.parse(req.body);
+  const { goal } = await userGoal(userId, goalId);
+  const settings = await model.getSettings(userId);
+  const result = await changePanel(userId, goal, (g) => rewritePanel(g, instruction, settings));
+  res.json(panelChanged(result, "Couldn't change the panel this time. Try again."));
+});
+
+app.post('/api/goals/:goalId/panel/undo', async (req: Request, res: Response) => {
+  const { goalId } = req.params as Record<string, string>;
+  const { userId } = z.object({ userId: z.string().min(1, 'userId is required') }).parse(req.body);
+  await userGoal(userId, goalId);
+  const result = await model.undoPanel(userId, goalId);
+  if (result === null) throw new HttpError(404, 'goal not found');
+  if (result === 'empty') throw new HttpError(409, 'nothing to undo');
+  if (result === 'conflict') throw new HttpError(409, 'the panel just changed; try again');
+  res.json({ goal: result });
+});
+
+// Manual edits without the AI: remove, move, toggle a checklist item. Applied to the panel
+// as stored at that moment, so quick edits in a row each build on the last one.
+app.patch('/api/goals/:goalId/panel/widgets/:widgetId', async (req: Request, res: Response) => {
+  const { goalId, widgetId } = req.params as Record<string, string>;
+  const { userId, op } = widgetOpSchema.parse(req.body);
+  await userGoal(userId, goalId);
+  const result = await model.applyPanelOp(userId, goalId, widgetId, op);
+  if (!result.ok) throw new HttpError(result.status, result.error);
+  res.json({ goal: result.goal });
+});
+
+// Log one entry in a log widget; an optional proof photo is judged by the vision model.
+// The image is used in memory for that one call and never stored or logged.
+app.post('/api/goals/:goalId/entries', async (req: Request, res: Response) => {
+  const { goalId } = req.params as Record<string, string>;
+  const body = entrySchema.parse(req.body);
+  const { user, goal } = await userGoal(body.userId, goalId);
+  const log = logWidgets(goal.panel).find((l) => l.id === body.widgetId);
+  if (!log) throw new HttpError(404, 'log widget not found');
+  const checked = validateEntryValues(log, body.values);
+  if (!checked.ok) throw new HttpError(400, checked.error);
+
+  let proof: ProofVerdict = 'none';
+  let proofReason = '';
+  if (body.proof) {
+    const image = proofDataUrl(body.proof);
+    if ('error' in image) throw new HttpError(400, image.error);
+    const verdict = await judgeProof(goal, log, checked.values, image.url);
+    proof = verdict.verdict;
+    proofReason = verdict.reason;
+    console.log(`[proof] ${verdict.verdict} ${verdict.confidence.toFixed(2)}`);
+  } else if (log.proof === 'required') {
+    throw new HttpError(400, 'this log needs a photo or screenshot as proof');
+  }
+
+  const entry = await model.addEntry(user.id, goal.id, {
+    widgetId: log.id,
+    values: checked.values,
+    note: cleanText(body.note ?? '', 300),
+    minutes: entryMinutes(log, checked.values),
+    proof,
+    proofReason,
+  });
+  if (!entry) throw new HttpError(404, 'goal not found');
+  const row = await countVerifiedEntry(user, goal, entry);
+  const [fresh, stats] = await Promise.all([model.getGoal(user.id, goal.id), model.computeStats(user.id)]);
+  res.json({ entry, goal: fresh ?? goal, stats, points: row });
+});
+
+app.delete('/api/goals/:goalId/entries/:entryId', async (req: Request, res: Response) => {
+  const { goalId, entryId } = req.params as Record<string, string>;
+  const { userId } = z.object({ userId: z.string().min(1, 'userId is required') }).parse(req.body);
+  await userGoal(userId, goalId);
+  const deleted = await model.deleteEntry(userId, goalId, entryId);
+  if (!deleted) throw new HttpError(404, 'entry not found');
+  const [fresh, stats] = await Promise.all([model.getGoal(userId, goalId), model.computeStats(userId)]);
+  res.json({ goal: fresh, stats });
+});
+
 app.get('/api/cosmos', async (req: Request, res: Response) => {
   const { rows, offline } = await points.leaderboard(req.query.mode === 'demo' ? 'demo' : 'real');
   res.json({ players: rows, offline });
@@ -607,7 +935,18 @@ app.use((err: unknown, _req: Request, res: Response, _next: NextFunction) => {
 // Start
 // ---------------------------------------------------------------------------
 
-const PORT = Number(process.env.API_PORT ?? 8787);
+const PORT = Number(process.env.API_PORT ?? 8887); // v2; v1 keeps 8787
+const ORPHAN_SWEEP_MS = 10 * 60_000;
+
+/** Entries whose goal is gone (v1 deletes goals without knowing about entries); never throws. */
+async function sweepOrphanEntries(): Promise<void> {
+  try {
+    const removed = await model.sweepOrphanEntries();
+    if (removed > 0) console.log(`[db] removed ${removed} entries left without a goal`);
+  } catch (err) {
+    console.warn(`[db] orphan entry sweep failed: ${err instanceof Error ? err.message : 'error'}`);
+  }
+}
 
 async function main(): Promise<void> {
   try {
@@ -616,6 +955,8 @@ async function main(): Promise<void> {
   } catch (err) {
     console.error('[db] constraint init failed:', err instanceof Error ? err.message : err);
   }
+  await sweepOrphanEntries();
+  setInterval(() => void sweepOrphanEntries(), ORPHAN_SWEEP_MS).unref();
   // Warm up Whisper in the background; logs when ready, never crashes boot.
   warmUp().catch(() => {});
   app.listen(PORT, () => {

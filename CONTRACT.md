@@ -19,6 +19,8 @@ type Goal = {
   milestones: Milestone[];       // sorted by order
   details: GoalDetail[];         // small facts recorded by the agent, sorted by createdAt
   sessions: Session[];           // the 5 most recent focus sessions, newest first
+  panel: PanelSpec | null;       // v2: the AI-built panel, null until designed (PANELS.md)
+  entries: Entry[];              // v2: what the user logged in the panel's log widgets, newest first, max 400, last 400 days (PANELS.md)
 }
 type Session = { id: string; task: string; plannedMinutes: number; activeSeconds: number;
   verifiedSeconds: number; drifts: number; headline: string; endedAt: string } // drifts = off_track checks in the session
@@ -44,7 +46,11 @@ type AgentEvent =
   | { type: 'details_updated'; goalId: string; goal: Goal }
   | { type: 'detail_added'; goalId: string; detail: GoalDetail }
   | { type: 'goal_ready'; goalId: string }
+  | { type: 'entry_logged'; goalId: string; entry: Entry }                    // v2 (PANELS.md)
+  | { type: 'panel_updated'; goalId: string; goal: Goal; change: string }     // v2 (PANELS.md)
 ```
+
+`PanelSpec`, `Widget`, `Field` and `Entry` are defined in [PANELS.md](PANELS.md).
 
 ## Endpoints
 
@@ -64,6 +70,9 @@ type AgentEvent =
 | POST | `/api/goals/:goalId/next-step` | `{ userId }` | `{ task, minutes, why, milestoneId }` — the one task (max 10 words, starts with a verb) to do right now; `minutes` is 15, 25, 50 or 90; `milestoneId` is the undone milestone it advances, if any; 404 for unknown user/goal |
 | PATCH | `/api/goals/:goalId` | `{ userId, public }` | `{ goal }` (404 if not theirs); republishes the user's public goals to the cosmos |
 | POST | `/api/sessions/recap` | `{ userId, goalId, task (1–120 chars), plannedMinutes (5–180), activeSeconds, verifiedSeconds, completed, checks: { at, verdict, reason (≤200 chars) }[] }` (max 200 checks) | `{ session, headline, summary, driftNote, next: { task, minutes }, suggestMilestoneId }` — saves the session on the goal and writes an honest recap; `suggestMilestoneId` set only when verified time ≥ 70% of planned and the task clearly matches that still-undone milestone; the session is saved even when the AI call fails |
+| POST | `/api/goals/:goalId/panel/design` · `/panel/edit` · `/panel/undo` | see [PANELS.md](PANELS.md) | v2: AI-built goal panels (design, edit in words, undo) |
+| PATCH | `/api/goals/:goalId/panel/widgets/:widgetId` | `{ userId, op }` | v2: manual remove / move / toggle a checklist item (PANELS.md) |
+| POST / DELETE | `/api/goals/:goalId/entries` · `/entries/:entryId` | see [PANELS.md](PANELS.md) | v2: log an entry (optional proof photo judged by the vision model) / delete it |
 | POST | `/api/transcribe` | raw 16 kHz mono Float32 PCM | `{ text, ms, seconds }` (local Whisper) |
 | GET | `/api/cosmos` | | `{ players: PointsRow[], offline }` from the shared points service |
 | GET | `/api/leaderboard` | | `{ rows: PointsRow[], offline }` from the shared points service |
@@ -75,6 +84,7 @@ type AgentEvent =
 - `/api/focus/check` returns `roast` too: one playful line teasing the off-track activity (PG, never about the person), non-empty only when `verdict` is `off_track` and the user's `roast` setting is not `off`.
 - `Settings` are per-user and applied by the server: `strictness` sets the focus-check count threshold (confidence ≥ relaxed 0.5 · normal 0.6 · strict 0.75) and `notifyAbove` in the response (relaxed 0.85 · normal 0.7 · strict 0.6) tells the desktop when to notify on off-track. `helpfulness` styles the capture/coach replies; `roast` `off` forces `roast` to `""`, `mild` keeps the gentle teasing, `spicy` makes it sharper (still PG). When `shareGoalTitle` turns false the points player's `goalTitle` is cleared immediately, and while it is false no goal title is ever sent to the points service.
 - Per-goal visibility: every goal is public or private. New goals are public when `shareGoalTitle` is on (the default); `PATCH /api/goals/:goalId` flips one goal. The server publishes the user's public goals to the points service (`PUT /v1/players/:id/goals`, max 12, newest last, shape `{ id, title, status, brightness, milestonesDone, milestonesTotal }` from [POINTS.md](POINTS.md)) after a goal is created, details are updated, a milestone is toggled/completed/added, a goal's visibility changes, a session recap is saved, and on `GET /api/users/:userId` at most once per 60 s per user — always fire and forget, failing soft. A private goal's title is never sent to the points service; the legacy single `goalTitle` (active goal on the leaderboard) keeps working for public goals.
+- v2 panels ([PANELS.md](PANELS.md)): every spec, AI-written or not, goes through the server's sanitizer (`server/src/panel.ts`) before it is saved. A verified entry with minutes logs an `NSActivity` (`source: 'checkin'`) and reports its time to the points service in chunks of at most 15 minutes. In coaching the agent may log self-reported entries (`entry_logged`) and change the panel (`panel_updated`).
 - `/api/activity` is the integration point for the camera/screen tracker. `onTask: false` minutes are stored but earn nothing. If `goalId` is missing, use the user's most recent goal.
 - Focus sessions are the core loop on ready goals: `/api/goals/:goalId/next-step` has the coach pick the next task (it sees the goal's milestones, subgoal/action details and the last 3 sessions, so it never repeats finished work); `/api/sessions/recap` ends a session, saves it on the goal (`Goal.sessions`, newest first, max 5) and returns the recap plus the next task. A session's `drifts` counts its `off_track` checks; `driftNote` names the drift pattern and is `""` when the user never drifted.
 

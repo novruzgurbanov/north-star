@@ -29,6 +29,89 @@ export type Session = {
 /** One focus-check verdict as the desktop app reported it during a session. */
 export type SessionCheck = { at: string; verdict: 'on_track' | 'off_track' | 'uncertain'; reason: string };
 
+// ---------------------------------------------------------------------------
+// AI-built goal panels (../PANELS.md). The AI writes a declarative spec; the
+// server sanitizes it (src/panel.ts) and the web UI renders built-in widgets.
+// ---------------------------------------------------------------------------
+
+export type PanelProfile = 'screen' | 'offline' | 'habit' | 'quantity' | 'project' | 'mixed';
+
+export const PANEL_PROFILES: readonly PanelProfile[] = ['screen', 'offline', 'habit', 'quantity', 'project', 'mixed'];
+
+export type FieldKind = 'number' | 'minutes' | 'text' | 'rating' | 'boolean';
+
+/** One input of a log widget. key is snake_case (1-24), label <= 24, unit <= 10. */
+export type Field = { key: string; label: string; kind: FieldKind; unit?: string; required?: boolean };
+
+export type ProofMode = 'none' | 'optional' | 'required';
+
+export type ChecklistItem = { id: string; text: string; done: boolean }; // id "i_" + 4-12 [a-z0-9], text <= 60
+
+type WidgetBase = { id: string; title: string }; // id "w_" + 4-12 [a-z0-9] (server-assigned), title 1-40
+
+export type MilestonesWidget = WidgetBase & { type: 'milestones' };
+export type FocusSessionWidget = WidgetBase & { type: 'focus_session'; minutes: number[] }; // 1-4 values, 5..180
+export type NextStepWidget = WidgetBase & { type: 'next_step' };
+export type LogWidget = WidgetBase & { type: 'log'; fields: Field[]; proof: ProofMode; proofHint: string }; // 1-5 fields, hint <= 80
+export type StreakWidget = WidgetBase & { type: 'streak'; source: string; cadence: 'daily' | 'weekly'; perPeriod: number }; // 1..14
+export type CounterWidget = WidgetBase & {
+  type: 'counter';
+  source: string;
+  field: string;
+  unit: string;
+  target: number; // > 0
+  period: 'week' | 'month' | 'total';
+};
+export type ChartWidget = WidgetBase & {
+  type: 'chart';
+  source: string;
+  field: string;
+  unit: string;
+  period: 'week' | 'month';
+  span: number; // 4..12
+};
+export type HabitGridWidget = WidgetBase & { type: 'habit_grid'; source: string; days: 14 | 28 };
+export type ChecklistWidget = WidgetBase & { type: 'checklist'; items: ChecklistItem[] }; // 1-10 items
+export type CountdownWidget = WidgetBase & { type: 'countdown'; date: string; label: string }; // YYYY-MM-DD, label <= 40
+export type NoteWidget = WidgetBase & { type: 'note'; text: string }; // <= 400, plain text
+
+export type Widget =
+  | MilestonesWidget
+  | FocusSessionWidget
+  | NextStepWidget
+  | LogWidget
+  | StreakWidget
+  | CounterWidget
+  | ChartWidget
+  | HabitGridWidget
+  | ChecklistWidget
+  | CountdownWidget
+  | NoteWidget;
+
+export type WidgetType = Widget['type'];
+
+export type PanelSpec = {
+  version: number; // increments on every change
+  profile: PanelProfile; // how this goal is mostly worked on
+  summary: string; // <= 140 chars, second person
+  widgets: Widget[]; // ordered top to bottom, 1..8
+  updatedAt: string; // ISO
+};
+
+export type ProofVerdict = 'none' | 'verified' | 'unverified' | 'rejected';
+
+/** One thing the user logged in a log widget: (:NSGoal)-[:HAS_ENTRY]->(:NSEntry). */
+export type Entry = {
+  id: string;
+  widgetId: string;
+  at: string; // ISO
+  values: Record<string, number | string | boolean>;
+  note: string;
+  minutes: number; // the first minutes-kind field value (0 if none), capped at 600
+  proof: ProofVerdict;
+  proofReason: string;
+};
+
 export type Goal = {
   id: string;
   title: string;
@@ -43,6 +126,8 @@ export type Goal = {
   milestones: Milestone[]; // sorted by order
   details: GoalDetail[]; // small facts recorded by the coach, sorted by createdAt
   sessions: Session[]; // the 5 most recent focus sessions, newest first
+  panel: PanelSpec | null; // the AI-built panel (../PANELS.md); null until designed
+  entries: Entry[]; // newest first, max 400, last 400 days
 };
 
 export type User = { id: string; name: string; color: string; seeded: boolean; pointsPlayerId: string | null };
@@ -64,7 +149,9 @@ export type AgentEvent =
   | { type: 'focus_logged'; goalId: string; minutes: number }
   | { type: 'details_updated'; goalId: string; goal: Goal }
   | { type: 'detail_added'; goalId: string; detail: GoalDetail }
-  | { type: 'goal_ready'; goalId: string };
+  | { type: 'goal_ready'; goalId: string }
+  | { type: 'entry_logged'; goalId: string; entry: Entry }
+  | { type: 'panel_updated'; goalId: string; goal: Goal; change: string };
 
 export type Phase = 'discovering' | 'coaching';
 

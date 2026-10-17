@@ -1,12 +1,32 @@
 import { nanoid } from 'nanoid';
 import { z } from 'zod';
 import { run, toNum } from './db.js';
-import { DEFAULT_SETTINGS, DETAIL_KINDS, type Goal, type GoalDetail, type DetailKind, type Milestone, type NewGoal, type Session, type Settings, type Stats, type User } from './types.js';
+import { applyWidgetOp, carryProgress, parseStoredPanel, parseStoredPanelPrev, sameLayout, type WidgetOp } from './panel.js';
+import { DEFAULT_SETTINGS, DETAIL_KINDS, type Entry, type Goal, type GoalDetail, type DetailKind, type Milestone, type NewGoal, type PanelSpec, type ProofVerdict, type Session, type Settings, type Stats, type User } from './types.js';
 
 export const COLORS = ['#8ecbff', '#ffd59e', '#c9a7ff', '#9effd8', '#ff9ec4', '#fff3b0', '#a7c4ff', '#ffb38a'];
 
 const nowIso = (): string => new Date().toISOString();
 const newId = (): string => nanoid(12);
+
+// Read-change-write steps that share a key run one at a time in this process (panel
+// writes per goal, check-in caps per user), so two requests can't both build on the
+// same state and overwrite each other.
+const locks = new Map<string, Promise<void>>();
+
+async function withLock<T>(key: string, fn: () => Promise<T>): Promise<T> {
+  const result = (locks.get(key) ?? Promise.resolve()).then(fn);
+  const tail = result.then(
+    () => undefined,
+    () => undefined
+  );
+  locks.set(key, tail);
+  try {
+    return await result;
+  } finally {
+    if (locks.get(key) === tail) locks.delete(key);
+  }
+}
 
 /** Pick a user color from the palette by hashing their name. */
 export function userColor(name: string): string {
@@ -68,12 +88,45 @@ function mapSession(s: Record<string, unknown>): Session {
   };
 }
 
+const PROOF_VERDICTS: readonly ProofVerdict[] = ['none', 'verified', 'unverified', 'rejected'];
+
+/** Entry values are a JSON string on NSEntry; only flat number/string/boolean values survive. */
+function parseEntryValues(raw: unknown): Entry['values'] {
+  const out: Entry['values'] = {};
+  if (typeof raw !== 'string') return out;
+  try {
+    const parsed: unknown = JSON.parse(raw);
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return out;
+    for (const [k, v] of Object.entries(parsed as Record<string, unknown>)) {
+      if (typeof v === 'number' || typeof v === 'string' || typeof v === 'boolean') out[k] = v;
+    }
+  } catch {
+    // corrupt values -> none
+  }
+  return out;
+}
+
+function mapEntry(e: Record<string, unknown>): Entry {
+  const proof = String(e.proof ?? 'none') as ProofVerdict;
+  return {
+    id: String(e.id),
+    widgetId: String(e.widgetId ?? ''),
+    at: String(e.at ?? ''),
+    values: parseEntryValues(e.values),
+    note: String(e.note ?? ''),
+    minutes: toNum(e.minutes),
+    proof: PROOF_VERDICTS.includes(proof) ? proof : 'none',
+    proofReason: String(e.proofReason ?? ''),
+  };
+}
+
 export function toGoal(
   g: Record<string, unknown>,
   milestones: Array<Record<string, unknown>>,
   focusMinutes: number,
   details: Array<Record<string, unknown>> = [],
-  sessions: Array<Record<string, unknown>> = []
+  sessions: Array<Record<string, unknown>> = [],
+  entries: Array<Record<string, unknown>> = []
 ): Goal {
   const ms: Milestone[] = milestones
     .map((m) => ({
@@ -127,6 +180,11 @@ export function toGoal(
       .map(mapSession)
       .sort((a, b) => b.endedAt.localeCompare(a.endedAt) || b.id.localeCompare(a.id))
       .slice(0, 5), // the 5 most recent, newest first
+    panel: parseStoredPanel(g.panel), // v1 goals have none yet
+    entries: entries
+      .map(mapEntry)
+      .sort((a, b) => b.at.localeCompare(a.at) || b.id.localeCompare(a.id))
+      .slice(0, MAX_LOADED_ENTRIES), // newest first
   };
 }
 
@@ -279,6 +337,18 @@ export async function updateSettings(userId: string, partial: unknown): Promise<
 // Goals
 // ---------------------------------------------------------------------------
 
+// Entries load with their goal: newest first, max 400, last 400 days (../PANELS.md).
+const MAX_LOADED_ENTRIES = 400;
+const ENTRY_DAYS = 400;
+const entriesSince = (): string => new Date(Date.now() - ENTRY_DAYS * 24 * 60 * 60 * 1000).toISOString();
+
+// Collects one goal's recent entries back into a single row (no row multiplication).
+const ENTRIES_CYPHER = `OPTIONAL MATCH (g)-[:HAS_ENTRY]->(e: NSEntry)
+     WHERE e.at >= $since
+     WITH g, ms, ds, ss, e
+     ORDER BY e.at DESC
+     WITH g, ms, ds, ss, collect(e {.*})[0..${MAX_LOADED_ENTRIES}] AS es`;
+
 export async function loadGoals(userId: string): Promise<Goal[]> {
   const rows = await run(
     `MATCH (u: NSUser {id: $userId})-[:PURSUES]->(g: NSGoal)
@@ -288,12 +358,13 @@ export async function loadGoals(userId: string): Promise<Goal[]> {
      WITH g, ms, collect(d {.*}) AS ds
      OPTIONAL MATCH (g)-[:HAD_SESSION]->(s: NSSession)
      WITH g, ms, ds, collect(s {.*}) AS ss
+     ${ENTRIES_CYPHER}
      OPTIONAL MATCH (a: NSActivity)-[:FOR]->(g)
      WHERE a.onTask = true
-     WITH g, ms, ds, ss, coalesce(sum(a.minutes), 0) AS focus
-     RETURN g {.*} AS goal, ms, ds, ss, focus
+     WITH g, ms, ds, ss, es, coalesce(sum(a.minutes), 0) AS focus
+     RETURN g {.*, panelPrev: null} AS goal, ms, ds, ss, es, focus
      ORDER BY g.createdAt`,
-    { userId }
+    { userId, since: entriesSince() }
   );
   return rows.map((r) =>
     toGoal(
@@ -301,7 +372,8 @@ export async function loadGoals(userId: string): Promise<Goal[]> {
       (r.ms as Array<Record<string, unknown>>) ?? [],
       toNum(r.focus),
       (r.ds as Array<Record<string, unknown>>) ?? [],
-      (r.ss as Array<Record<string, unknown>>) ?? []
+      (r.ss as Array<Record<string, unknown>>) ?? [],
+      (r.es as Array<Record<string, unknown>>) ?? []
     )
   );
 }
@@ -315,11 +387,12 @@ export async function getGoal(userId: string, goalId: string): Promise<Goal | nu
      WITH g, ms, collect(d {.*}) AS ds
      OPTIONAL MATCH (g)-[:HAD_SESSION]->(s: NSSession)
      WITH g, ms, ds, collect(s {.*}) AS ss
+     ${ENTRIES_CYPHER}
      OPTIONAL MATCH (a: NSActivity)-[:FOR]->(g)
      WHERE a.onTask = true
-     WITH g, ms, ds, ss, coalesce(sum(a.minutes), 0) AS focus
-     RETURN g {.*} AS goal, ms, ds, ss, focus`,
-    { userId, goalId }
+     WITH g, ms, ds, ss, es, coalesce(sum(a.minutes), 0) AS focus
+     RETURN g {.*, panelPrev: null} AS goal, ms, ds, ss, es, focus`,
+    { userId, goalId, since: entriesSince() }
   );
   if (rows.length === 0) return null;
   return toGoal(
@@ -327,7 +400,8 @@ export async function getGoal(userId: string, goalId: string): Promise<Goal | nu
     (rows[0].ms as Array<Record<string, unknown>>) ?? [],
     toNum(rows[0].focus),
     (rows[0].ds as Array<Record<string, unknown>>) ?? [],
-    (rows[0].ss as Array<Record<string, unknown>>) ?? []
+    (rows[0].ss as Array<Record<string, unknown>>) ?? [],
+    (rows[0].es as Array<Record<string, unknown>>) ?? []
   );
 }
 
@@ -541,6 +615,166 @@ export async function addMilestone(goalId: string, title: string): Promise<Miles
 }
 
 // ---------------------------------------------------------------------------
+// Goal panels (../PANELS.md): NSGoal.panel is the spec as a JSON string,
+// NSGoal.panelPrev a JSON array of up to 10 previous specs, newest first.
+// ---------------------------------------------------------------------------
+
+const MAX_PANEL_PREV = 10;
+
+type PanelState = { raw: string; panel: PanelSpec | null; prev: PanelSpec[] };
+
+/** The goal's current panel (and its stored JSON) and undo stack, or null when the goal is not theirs. */
+async function readPanelState(userId: string, goalId: string): Promise<PanelState | null> {
+  const rows = await run(
+    `MATCH (:NSUser {id: $userId})-[:PURSUES]->(g: NSGoal {id: $goalId})
+     RETURN g.panel AS panel, g.panelPrev AS prev`,
+    { userId, goalId }
+  );
+  if (rows.length === 0) return null;
+  const raw = typeof rows[0].panel === 'string' ? rows[0].panel : '';
+  return { raw, panel: parseStoredPanel(raw), prev: parseStoredPanelPrev(rows[0].prev) };
+}
+
+/**
+ * Write `spec` (version = newest known + 1, updatedAt now) and the undo stack, but only while
+ * the stored panel is still the one in `state` (a second guard next to the lock, for another
+ * server process on the same database). Returns the fresh Goal, 'conflict' when the panel
+ * changed in between, or null when the goal is gone.
+ */
+async function commitPanel(
+  userId: string,
+  goalId: string,
+  state: PanelState,
+  spec: PanelSpec,
+  prev: PanelSpec[]
+): Promise<Goal | 'conflict' | null> {
+  const version = Math.max(state.panel?.version ?? 0, ...state.prev.map((p) => p.version)) + 1;
+  const next: PanelSpec = { ...spec, version, updatedAt: nowIso() };
+  const rows = await run(
+    `MATCH (:NSUser {id: $userId})-[:PURSUES]->(g: NSGoal {id: $goalId})
+     WHERE coalesce(g.panel, '') = $expected
+     SET g.panel = $panel, g.panelPrev = $prev
+     RETURN g.id AS id`,
+    { userId, goalId, expected: state.raw, panel: JSON.stringify(next), prev: JSON.stringify(prev.slice(0, MAX_PANEL_PREV)) }
+  );
+  if (rows.length === 0) return 'conflict';
+  return getGoal(userId, goalId);
+}
+
+/**
+ * Save a sanitized spec as the goal's panel (version = current + 1, updatedAt now); the
+ * current spec goes on the undo stack. `base` is the spec the change was built from (null:
+ * the goal had no panel). With it, checklist ticks made since are carried over, and any
+ * other change since returns 'conflict' instead of being overwritten (an AI edit takes
+ * seconds; the user may tick, move or edit in another window meanwhile). Without it the
+ * spec is saved as is. Returns the fresh Goal, or null when the goal is not theirs.
+ */
+export async function savePanel(
+  userId: string,
+  goalId: string,
+  spec: PanelSpec,
+  base?: PanelSpec | null
+): Promise<Goal | 'conflict' | null> {
+  return withLock(`panel:${goalId}`, async () => {
+    const state = await readPanelState(userId, goalId);
+    if (!state) return null;
+    let next = spec;
+    if (base !== undefined) {
+      if (!sameLayout(state.panel, base)) return 'conflict';
+      next = carryProgress(spec, state.panel);
+    }
+    return commitPanel(userId, goalId, state, next, state.panel ? [state.panel, ...state.prev] : state.prev);
+  });
+}
+
+export type PanelOpResult = { ok: true; goal: Goal } | { ok: false; status: number; error: string };
+
+/**
+ * Apply one manual edit (remove, move, toggle a checklist item) to the panel as stored right
+ * now, so quick edits in a row each build on the last one. Ticking an item is progress, not
+ * a layout change: it does not go on the undo stack.
+ */
+export async function applyPanelOp(userId: string, goalId: string, widgetId: string, op: WidgetOp): Promise<PanelOpResult> {
+  return withLock(`panel:${goalId}`, async (): Promise<PanelOpResult> => {
+    const state = await readPanelState(userId, goalId);
+    if (!state) return { ok: false, status: 404, error: 'goal not found' };
+    if (!state.panel) return { ok: false, status: 404, error: 'panel not found' };
+    const result = applyWidgetOp(state.panel, widgetId, op);
+    if (!result.ok) return result;
+    const prev = op.kind === 'toggle_item' ? state.prev : [state.panel, ...state.prev];
+    const goal = await commitPanel(userId, goalId, state, result.spec, prev);
+    if (goal === 'conflict') return { ok: false, status: 409, error: 'the panel just changed; try again' };
+    if (!goal) return { ok: false, status: 404, error: 'goal not found' };
+    return { ok: true, goal };
+  });
+}
+
+/**
+ * Restore the newest previous spec; checklist ticks made since stay (undo restores a layout,
+ * not old progress). 'empty' when there is nothing to undo, null when the goal is not theirs.
+ */
+export async function undoPanel(userId: string, goalId: string): Promise<Goal | 'empty' | 'conflict' | null> {
+  return withLock(`panel:${goalId}`, async () => {
+    const state = await readPanelState(userId, goalId);
+    if (!state) return null;
+    const [restored, ...rest] = state.prev;
+    if (!restored) return 'empty';
+    return commitPanel(userId, goalId, state, carryProgress(restored, state.panel), rest);
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Entries: (:NSGoal)-[:HAS_ENTRY]->(:NSEntry), values as a JSON string
+// ---------------------------------------------------------------------------
+
+export interface EntryInput {
+  widgetId: string;
+  values: Entry['values'];
+  note: string;
+  minutes: number;
+  proof: ProofVerdict;
+  proofReason: string;
+}
+
+/** Store one entry on the user's goal; returns it, or null when the goal is not theirs. */
+export async function addEntry(userId: string, goalId: string, input: EntryInput): Promise<Entry | null> {
+  const rows = await run(
+    `MATCH (:NSUser {id: $userId})-[:PURSUES]->(g: NSGoal {id: $goalId})
+     CREATE (e: NSEntry {
+       id: $id, widgetId: $widgetId, at: $at, values: $values, note: $note,
+       minutes: $minutes, proof: $proof, proofReason: $proofReason
+     })
+     CREATE (g)-[:HAS_ENTRY]->(e)
+     RETURN e {.*} AS entry`,
+    {
+      userId,
+      goalId,
+      id: newId(),
+      widgetId: input.widgetId,
+      at: nowIso(),
+      values: JSON.stringify(input.values),
+      note: input.note,
+      minutes: input.minutes,
+      proof: input.proof,
+      proofReason: input.proofReason,
+    }
+  );
+  if (rows.length === 0) return null;
+  return mapEntry(rows[0].entry as Record<string, unknown>);
+}
+
+/** Delete one entry of the user's goal. Returns false when it is not theirs. */
+export async function deleteEntry(userId: string, goalId: string, entryId: string): Promise<boolean> {
+  const rows = await run(
+    `MATCH (:NSUser {id: $userId})-[:PURSUES]->(:NSGoal {id: $goalId})-[:HAS_ENTRY]->(e: NSEntry {id: $entryId})
+     DETACH DELETE e
+     RETURN 1 AS deleted`,
+    { userId, goalId, entryId }
+  );
+  return rows.length > 0;
+}
+
+// ---------------------------------------------------------------------------
 // Activity
 // ---------------------------------------------------------------------------
 
@@ -560,6 +794,27 @@ export async function logActivity(input: ActivityInput): Promise<void> {
      CREATE (a)-[:FOR]->(g)`,
     { ...input, id: newId(), at: nowIso() }
   );
+}
+
+/**
+ * Log verified check-in minutes as on-task activity (source 'checkin'), but never more than
+ * `dayMax` check-in minutes per user in any 24 hours: the minutes are typed by the user and
+ * a photo can be sent again. One at a time per user, so parallel check-ins can't both fit
+ * under the cap. Returns the minutes logged (0 when the day is full).
+ */
+export async function logCheckin(userId: string, goalId: string, minutes: number, dayMax: number): Promise<number> {
+  return withLock(`checkin:${userId}`, async () => {
+    const rows = await run(
+      `MATCH (:NSUser {id: $userId})-[:LOGGED]->(a: NSActivity {source: 'checkin'})
+       WHERE a.at >= $since
+       RETURN coalesce(sum(a.minutes), 0) AS used`,
+      { userId, since: new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString() }
+    );
+    const counted = Math.round(Math.min(minutes, dayMax - toNum(rows[0]?.used)) * 100) / 100;
+    if (!(counted > 0)) return 0;
+    await logActivity({ userId, goalId, onTask: true, minutes: counted, source: 'checkin' });
+    return counted;
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -647,7 +902,7 @@ export async function computeStats(userId: string): Promise<Stats> {
 // Cleanup (seed + acceptance test)
 // ---------------------------------------------------------------------------
 
-/** Delete a non-seeded user and everything hanging off them (goals, milestones, activities). */
+/** Delete a non-seeded user and everything hanging off them (goals, milestones, entries, activities). */
 export async function deleteNonSeededUsersByName(name: string): Promise<number> {
   const found = await run(
     `MATCH (u: NSUser {nameLower: $nameLower})
@@ -662,23 +917,44 @@ export async function deleteNonSeededUsersByName(name: string): Promise<number> 
 }
 
 /**
- * Delete one of the user's goals with its milestones, details and sessions. Focus activity
- * stays (detached) so the user's verified time and streak are not rewritten. Returns false if
- * the goal is not theirs.
+ * Delete one of the user's goals with its milestones, details, sessions and entries. Focus
+ * activity stays (detached) so the user's verified time and streak are not rewritten. Returns
+ * false if the goal is not theirs. Each part is collected in its own step, so the rows never
+ * multiply (a goal can hold hundreds of entries).
  */
 export async function deleteGoal(userId: string, goalId: string): Promise<boolean> {
   const rows = await run(
     `MATCH (:NSUser {id: $userId})-[:PURSUES]->(g: NSGoal {id: $goalId})
      OPTIONAL MATCH (g)-[:HAS_MILESTONE]->(m: NSMilestone)
+     WITH g, collect(m) AS ms
      OPTIONAL MATCH (g)-[:HAS_DETAIL]->(d: NSDetail)
+     WITH g, ms, collect(d) AS ds
      OPTIONAL MATCH (g)-[:HAD_SESSION]->(s: NSSession)
-     WITH g, collect(DISTINCT m) + collect(DISTINCT d) + collect(DISTINCT s) AS parts
+     WITH g, ms, ds, collect(s) AS ss
+     OPTIONAL MATCH (g)-[:HAS_ENTRY]->(e: NSEntry)
+     WITH g, ms, ds, ss, collect(e) AS es
+     WITH g, ms + ds + ss + es AS parts
      FOREACH (x IN parts | DETACH DELETE x)
      DETACH DELETE g
      RETURN 1 AS deleted`,
     { userId, goalId }
   );
   return rows.length > 0;
+}
+
+/**
+ * Delete entries no goal holds any more. v1 runs on the same database and deletes goals
+ * (and users) without knowing about entries, so v2 sweeps at startup and every few
+ * minutes; entries are deleted with their goal. Returns how many were removed.
+ */
+export async function sweepOrphanEntries(): Promise<number> {
+  const rows = await run(
+    `MATCH (e: NSEntry)
+     WHERE NOT ()-[:HAS_ENTRY]->(e)
+     DETACH DELETE e
+     RETURN count(*) AS removed`
+  );
+  return toNum(rows[0]?.removed);
 }
 
 export async function deleteUserCascade(userIds: string[]): Promise<void> {
@@ -705,6 +981,12 @@ export async function deleteUserCascade(userIds: string[]): Promise<void> {
     `UNWIND $userIds AS uid
      MATCH (:NSUser {id: uid})-[:PURSUES]->(g: NSGoal)-[:HAD_SESSION]->(s: NSSession)
      DETACH DELETE s`,
+    { userIds }
+  );
+  await run(
+    `UNWIND $userIds AS uid
+     MATCH (:NSUser {id: uid})-[:PURSUES]->(g: NSGoal)-[:HAS_ENTRY]->(e: NSEntry)
+     DETACH DELETE e`,
     { userIds }
   );
   await run(

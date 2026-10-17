@@ -6,7 +6,9 @@
     "dev": "tsx watch src/index.ts",
     "start": "tsx src/index.ts",
     "seed": "tsx src/seed.ts",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "test:panels": "tsx --test src/panel.test.ts",
+    "test:panels:e2e": "tsx scripts/panels-test.ts"
   },
   "dependencies": {
     "@huggingface/transformers": "^4.3.1",

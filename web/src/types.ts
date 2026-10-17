@@ -16,6 +16,52 @@ export type Recap = {
   next: { task: string; minutes: number }; suggestMilestoneId: string | null
 }
 
+/* ---------- v2: AI-built goal panels (see PANELS.md) ---------- */
+
+export type Profile = 'screen' | 'offline' | 'habit' | 'quantity' | 'project' | 'mixed'
+
+export type FieldKind = 'number' | 'minutes' | 'text' | 'rating' | 'boolean'
+export type Field = { key: string; label: string; kind: FieldKind; unit?: string; required?: boolean }
+
+export type ChecklistItem = { id: string; text: string; done: boolean }
+
+/** One built-in widget, configured by the AI. The spec only selects widgets; it never runs code. */
+export type Widget = { id: string; title: string } & (
+  | { type: 'milestones' }
+  | { type: 'focus_session'; minutes: number[] }
+  | { type: 'next_step' }
+  | { type: 'log'; fields: Field[]; proof: 'none' | 'optional' | 'required'; proofHint: string }
+  | { type: 'streak'; source: string; cadence: 'daily' | 'weekly'; perPeriod: number }
+  | { type: 'counter'; source: string; field: string; unit: string; target: number; period: 'week' | 'month' | 'total' }
+  | { type: 'chart'; source: string; field: string; unit: string; period: 'week' | 'month'; span: number }
+  | { type: 'habit_grid'; source: string; days: 14 | 28 }
+  | { type: 'checklist'; items: ChecklistItem[] }
+  | { type: 'countdown'; date: string; label: string }
+  | { type: 'note'; text: string }
+)
+export type WidgetType = Widget['type']
+export type WidgetOf<T extends WidgetType> = Extract<Widget, { type: T }>
+
+export type PanelSpec = {
+  version: number
+  profile: Profile
+  summary: string
+  widgets: Widget[]
+  updatedAt: string
+}
+
+export type ProofVerdict = 'none' | 'verified' | 'unverified' | 'rejected'
+export type EntryValues = Record<string, number | string | boolean>
+
+/** Something the user logged in a `log` widget. `proof: 'none'` means self-reported. */
+export type Entry = {
+  id: string; widgetId: string; at: string; values: EntryValues; note: string
+  minutes: number; proof: ProofVerdict; proofReason: string
+}
+
+/** Manual panel edits that don't need the AI. `move.to` is the widget's new index. */
+export type WidgetOp = { kind: 'remove' } | { kind: 'move'; to: number } | { kind: 'toggle_item'; itemId: string }
+
 export type Goal = {
   id: string
   title: string
@@ -31,6 +77,10 @@ export type Goal = {
   details?: GoalDetail[]
   sessions?: Session[]
   public?: boolean
+  /** v2: the AI-designed panel; null until the web UI asks for one on a ready goal */
+  panel?: PanelSpec | null
+  /** v2: logged entries, newest first (max 400, last 400 days) */
+  entries?: Entry[]
 }
 
 export type User = { id: string; name: string; color: string; seeded: boolean; pointsPlayerId?: string | null }
@@ -70,6 +120,8 @@ export type AgentEvent =
   | { type: 'details_updated'; goalId: string; goal: Goal }
   | { type: 'goal_ready'; goalId: string }
   | { type: 'detail_added'; goalId: string; detail: GoalDetail }
+  | { type: 'entry_logged'; goalId: string; entry: Entry }
+  | { type: 'panel_updated'; goalId: string; goal: Goal; change: string }
 
 export type ChatResponse = {
   reply: string

@@ -37,7 +37,7 @@ type Widget = { id: string /* "w_" + 4-12 [a-z0-9], server-assigned */, title: s
 )
 ```
 
-**Rules the server enforces on every spec (AI-written or not):** at most 8 widgets; at most one each of `milestones`, `focus_session`, `next_step`; at most 2 `log`; `source` must be the id of a `log` widget in the same spec; `field` must be a `number` or `minutes` field of that log; unknown widget types, extra properties, HTML, markdown links and control characters are dropped; strings are trimmed and length-capped; ids are re-assigned if missing, malformed or duplicated. An invalid widget is dropped, not the whole spec. If nothing valid is left, fall back to the **default panel** for the profile (below). A spec is never executed; it only selects and configures built-in widgets.
+**Rules the server enforces on every spec (AI-written or not):** at most 8 widgets; at most one each of `milestones`, `focus_session`, `next_step`; at most 2 `log`; `source` must be the id of a `log` widget in the same spec; `field` must be a `number` or `minutes` field of that log; unknown widget types, extra properties, HTML, markdown links and control characters are dropped; strings are trimmed and length-capped; ids are re-assigned if missing, malformed or duplicated. Checklist ticks are the user's, never the AI's: a spec the AI wrote takes each item's `done` from the current spec (same item id, else same text, which also keeps that id), and new items start undone. An invalid widget is dropped, not the whole spec. If nothing valid is left, fall back to the **default panel** for the profile (below). A spec is never executed; it only selects and configures built-in widgets.
 
 **Default panels** (used as the AI's fallback and as examples in its prompt):
 - `screen` / `project`: milestones, focus_session [25, 50].
@@ -53,7 +53,7 @@ type Widget = { id: string /* "w_" + 4-12 [a-z0-9], server-assigned */, title: s
 proof: 'none' | 'verified' | 'unverified' | 'rejected'
 ```
 
-`Goal` gains `panel: PanelSpec | null` and `entries: Entry[]` (newest first, max 400, last 400 days). Entries are deleted with their goal.
+`Goal` gains `panel: PanelSpec | null` and `entries: Entry[]` (newest first, max 400, last 400 days). Entries are deleted with their goal. v1 shares the database but not this rule, so the v2 server also deletes entries left without a goal, at startup and every 10 minutes.
 
 ```ts
 type Entry = { id: string; widgetId: string; at: string; values: Record<string, number | string | boolean>; note: string;
@@ -66,18 +66,20 @@ type Entry = { id: string; widgetId: string; at: string; values: Record<string, 
 
 | Method | Path | Body | Returns |
 |---|---|---|---|
-| POST | `/api/goals/:goalId/panel/design` | `{ userId, instruction? }` | `{ goal }`. The AI designs a panel from scratch from the goal, its details, milestones and recent entries. Saves the previous spec for undo. |
+| POST | `/api/goals/:goalId/panel/design` | `{ userId, instruction? }` | `{ goal }`. The AI designs a panel from scratch from the goal, its details, milestones and recent entries. Saves the previous spec for undo. Without `instruction`, a goal that already has a panel is returned unchanged (the web's lazy first design can fire from two windows). With `instruction` it is a redesign: logs that record the same activity keep their ids, ticks carry over, and when the AI fails the current panel stays (502) rather than being replaced by a default one. |
 | POST | `/api/goals/:goalId/panel/edit` | `{ userId, instruction }` (1-300 chars) | `{ goal, change }`. The AI rewrites the spec following the instruction; `change` is a one-line summary of what changed (<= 120 chars). |
 | POST | `/api/goals/:goalId/panel/undo` | `{ userId }` | `{ goal }`. Restores the previous spec (keeps up to 10 previous specs in `NSGoal.panelPrev`, a JSON array). 409 if none. |
 | PATCH | `/api/goals/:goalId/panel/widgets/:widgetId` | `{ userId, op }` | `{ goal }`. Manual edits without the AI. `op` is `{ kind: 'remove' }`, `{ kind: 'move', to: number }` or `{ kind: 'toggle_item', itemId }` (checklist). |
-| POST | `/api/goals/:goalId/entries` | `{ userId, widgetId, values, note?, proof? }` | `{ entry, goal, stats, points }`. `values` are validated against the log widget's fields (types, required, numbers finite and 0..100000, text <= 120). `proof` is an optional base64 JPEG/PNG (<= 4 MB): the vision model judges it and sets `proof`/`proofReason`. |
+| POST | `/api/goals/:goalId/entries` | `{ userId, widgetId, values, note?, proof? }` | `{ entry, goal, stats, points }`. `values` are validated against the log widget's fields (types, required, numbers finite and 0..100000, text <= 120, at least one value). `proof` is an optional base64 JPEG/PNG (<= 4 MB): the vision model judges it and sets `proof`/`proofReason`. |
 | DELETE | `/api/goals/:goalId/entries/:entryId` | `{ userId }` | `{ goal, stats }` |
 
 Also: `GET /api/users/:userId` returns goals with `panel` and `entries`. Ready goals that have no panel yet get one designed **lazily by the web UI** (it calls `/panel/design` the first time it opens such a goal); the server never blocks a read on the AI.
 
+AI changes (design, edit, the coach's `edit_panel`) take seconds, so each is saved onto the spec it was built from: checklist ticks made meanwhile are carried over; any other change meanwhile (a move, another window) makes the server redo the change once on the fresh panel, then answer 409. Manual widget ops apply to the panel as stored at that moment, one at a time per goal. Undo restores the previous layout and keeps the current checklist ticks.
+
 ### Verified entries count like verified focus
 
-When an entry's proof is `verified` and it has `minutes > 0`: log an `NSActivity` for those minutes (`source: 'checkin'`, so the star brightens) and report the time to the points service as intervals ending at the entry time, split into chunks of at most 15 minutes, each with its own id (the points service rejects longer intervals). Unverified or rejected entries count only on the goal's own widgets, never on the leaderboard. Private goals never send titles (same rules as v1).
+When an entry's proof is `verified` and it has `minutes > 0`: log an `NSActivity` for those minutes (`source: 'checkin'`, so the star brightens) and report the time to the points service as intervals ending at the entry time, split into equal chunks of at most 15 minutes, each with its own id (the points service rejects intervals over 15 minutes or under 5 seconds; a total under 5 seconds is not reported). The minutes are typed by the user and a photo can be sent again, so at most 180 minutes per entry, and 240 minutes of check-ins per user in any 24 hours, count this way; the entry itself keeps the minutes as logged. Unverified or rejected entries count only on the goal's own widgets, never on the leaderboard. Private goals never send titles (same rules as v1).
 
 ## 3. The AI
 
@@ -90,12 +92,12 @@ All calls use `CHAT_MODEL` / `VISION_MODEL` on ai& (OpenAI-compatible, JSON mode
 - Use the goal's details (motivation, distractions, on_track, actions) to choose fields and targets; never invent personal data.
 - Output JSON `{ profile, summary, widgets }` where widgets reference log widgets by a temporary `ref` (for example `"source": "runs"` and the log has `"ref": "runs"`); the server maps refs to ids.
 
-**Editor** (`editPanel(spec, goal, instruction, settings)`): receives the current spec with ids and returns the full new spec plus `change`. It keeps the ids of widgets it keeps (so logged entries stay attached), and may add, remove, reorder or reconfigure widgets. It must not invent entries or progress.
+**Editor** (`editPanel(spec, goal, instruction, settings)`): receives the current spec with ids and returns the full new spec plus `change`. It keeps the ids of widgets it keeps (so logged entries stay attached) and every checklist item's id and `done`, and may add, remove, reorder or reconfigure widgets. It must not invent entries or progress. As a safety net, a log the AI dropped and re-made with a field of the same key and kind gets its old id back.
 
-**Proof judge** (`judgeProof(goal, logWidget, values, image)`): "Does this image plausibly show the user did this activity: <values> for <goal>? Fair but not gullible: a fitness app screenshot showing the activity, a photo of them dressed for or right after it, the instrument being played, the dish they cooked → verified. Unclear → unverified. Unrelated or clearly staged → rejected. Never describe the person's appearance." → `{ verdict, confidence, reason (<= 120) }`. The image is used in memory for this one call and never stored or logged.
+**Proof judge** (`judgeProof(goal, logWidget, values, image)`): "Does this image plausibly show the user did this activity: <values> for <goal>? Fair but not gullible: a fitness app screenshot showing the activity, a photo of them dressed for or right after it, the instrument being played, the dish they cooked → verified. Unclear → unverified. Unrelated or clearly staged → rejected. Never describe the person's appearance." → `{ verdict, confidence, reason (<= 120, plain text) }`. The goal and the logged values are user-written, so they go in the user message as data (free-text fields left out), never in the system prompt; text in the image or the values is evidence, never instructions, and a logged time that the image makes implausible is unverified. The image is used in memory for this one call and never stored or logged.
 
 **Coach additions:** the coach prompt receives the panel summary and each log widget's id and fields, and may return two new actions:
-- `{ "type": "log_entry", "widgetId": string, "values": object }`: when the user reports doing the activity ("ran 6 km in 35 minutes, felt great"). These are stored with `proof: 'none'` (self-reported) and reported back as an event.
+- `{ "type": "log_entry", "widgetId": string, "values": object }`: when the user reports doing the activity ("ran 6 km in 35 minutes, felt great"). These are stored with `proof: 'none'` (self-reported) and reported back as an event. A `log_focus` in the same turn with the same minutes as a stored entry is the same time twice and is dropped; every other `log_focus` counts.
 - `{ "type": "edit_panel", "instruction": string }`: when the user asks to change how the goal is tracked ("can you add a chart for my km").
 New events: `{ type: 'entry_logged', goalId, entry }` and `{ type: 'panel_updated', goalId, goal, change }`.
 

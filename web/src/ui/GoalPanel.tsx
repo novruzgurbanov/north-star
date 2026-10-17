@@ -1,14 +1,23 @@
 import { useEffect, useState, type ReactNode } from 'react'
 import type { DetailKind, Goal, GoalDetail } from '../types'
 import { Calendar, Plus, Spark } from './icons'
+import { PanelTrack, type TrackHandlers } from './PanelTrack'
+import { ago } from './widgets/data'
+import { MilestoneTimeline } from './widgets/MilestoneTimeline'
 
-type Tab = 'plan' | 'about'
+// Brainstorm stars keep the v1 Plan tab; ready stars get the AI-built Track tab instead.
+type Tab = 'plan' | 'track' | 'about'
 
 type Props = {
   goal: Goal
   color: string
   dock: ReactNode
   focusing: boolean
+  /** A session on this goal that isn't idle: active, paused or stopped checking */
+  sessionHere: boolean
+  /** A session recap for this goal is loading or waiting to be read */
+  hasRecap: boolean
+  track: TrackHandlers
   onToggle: (milestoneId: string) => void
   onAsk: (text: string) => void
   onDelete: () => Promise<void>
@@ -45,14 +54,6 @@ function formatDeadline(d: string) {
   return d
 }
 
-const ago = (iso: string) => {
-  const m = Math.max(0, Math.round((Date.now() - Date.parse(iso)) / 60000))
-  if (m < 1) return 'just now'
-  if (m < 60) return `${m} min ago`
-  const h = Math.round(m / 60)
-  return h < 24 ? `${h} h ago` : `${Math.round(h / 24)} d ago`
-}
-
 function AddRow({ label, onClick }: { label: string; onClick: () => void }) {
   return <button className="detail-add" onClick={onClick}><Plus size={12} /> {label}</button>
 }
@@ -78,13 +79,14 @@ function readCollapsed() {
   try { return localStorage.getItem('ns.panelCollapsed') === '1' } catch { return false }
 }
 
-export function GoalPanel({ goal, color, dock, focusing, onToggle, onAsk, onDelete }: Props) {
+export function GoalPanel({ goal, color, dock, focusing, sessionHere, hasRecap, track, onToggle, onAsk, onDelete }: Props) {
   const [confirmDelete, setConfirmDelete] = useState(false)
   const [deleting, setDeleting] = useState(false)
   const little = goal.status === 'brainstorm'
-  const [tab, setTab] = useState<Tab>(little ? 'about' : 'plan')
+  const [chosen, setTab] = useState<Tab>(little ? 'about' : 'track')
+  // A star that turns ready while open swaps Plan for Track (and back, should it lose its steps).
+  const tab: Tab = chosen === 'about' ? 'about' : little ? 'plan' : 'track'
   const [collapsed, setCollapsed] = useState(readCollapsed)
-  const [pending, setPending] = useState<string | null>(null)
   const [moreAbout, setMoreAbout] = useState(false)
 
   useEffect(() => {
@@ -93,7 +95,6 @@ export function GoalPanel({ goal, color, dock, focusing, onToggle, onAsk, onDele
 
   const ms = [...goal.milestones].sort((a, b) => a.order - b.order)
   const done = ms.filter(m => m.done).length
-  const nextId = ms.find(m => !m.done)?.id
   const details = goal.details ?? []
   const of = (kind: DetailKind): GoalDetail[] => details.filter(d => d.kind === kind)
   // The agent sometimes files one result as both a milestone and a sub-goal; show it once, as the milestone.
@@ -101,6 +102,11 @@ export function GoalPanel({ goal, color, dock, focusing, onToggle, onAsk, onDele
   const subgoals = of('subgoal').filter(d => !milestoneTitles.has(d.text.trim().toLowerCase()))
   const actions = of('action')
   const sessions = (goal.sessions ?? []).slice(0, 3)
+  // On ready stars the session dock lives inside the panel's focus widget. While a session is on (running, paused
+  // or stopped checking) or its recap is up, and that widget isn't on screen (About tab, or removed mid-session),
+  // the dock stays pinned below, so the session can still be resumed or ended and the recap read.
+  const hasFocusWidget = !!goal.panel?.widgets.some(w => w.type === 'focus_session') || (!goal.panel && track.design === 'failed')
+  const pinnedDock = little || ((sessionHere || hasRecap) && (!hasFocusWidget || tab !== 'track'))
 
   const aboutGroups = ABOUT_GROUPS
     .map(g => ({ ...g, items: of(g.kind).filter(d => !(d.kind === 'motivation' && d.text === goal.why)) }))
@@ -132,27 +138,18 @@ export function GoalPanel({ goal, color, dock, focusing, onToggle, onAsk, onDele
         <div className="gp-inner">
           <div className="gp-scroll">
             <div className="seg seg-small gp-tabs" role="tablist" aria-label="Goal sections">
-              <button role="tab" aria-selected={tab === 'plan'} className={tab === 'plan' ? 'is-active' : ''} onClick={() => setTab('plan')}>Plan</button>
+              {little
+                ? <button role="tab" aria-selected={tab === 'plan'} className={tab === 'plan' ? 'is-active' : ''} onClick={() => setTab('plan')}>Plan</button>
+                : <button role="tab" aria-selected={tab === 'track'} className={tab === 'track' ? 'is-active' : ''} onClick={() => setTab('track')}>Track</button>}
               <button role="tab" aria-selected={tab === 'about'} className={tab === 'about' ? 'is-active' : ''} onClick={() => setTab('about')}>About</button>
             </div>
 
             {tab === 'plan' && (
               <div className="gp-section" role="tabpanel">
                 <h3 className="gp-label">Milestones</h3>
-                {ms.length > 0 ? (
-                  <ol className="timeline">
-                    {ms.map(m => (
-                      <li key={m.id} className={`tl-item ${m.done ? 'is-done' : ''} ${m.id === nextId ? 'is-next' : ''}`}>
-                        <button className="tl-btn" disabled={pending === m.id} title={m.done ? 'Mark as not done' : 'Mark as done'}
-                          onClick={async () => { setPending(m.id); try { await onToggle(m.id) } finally { setPending(null) } }}>
-                          <span className="tl-node" aria-hidden><Spark size={10} /></span>
-                          <span className="tl-title">{m.title}</span>
-                          {m.id === nextId && <span className="milestone-next">next</span>}
-                        </button>
-                      </li>
-                    ))}
-                  </ol>
-                ) : <AddRow label={PROMPTS.steps.label} onClick={() => onAsk(PROMPTS.steps.ask)} />}
+                {ms.length > 0
+                  ? <MilestoneTimeline milestones={ms} onToggle={onToggle} />
+                  : <AddRow label={PROMPTS.steps.label} onClick={() => onAsk(PROMPTS.steps.ask)} />}
 
                 <h3 className="gp-label">Sub-goals <span className="gp-hint">results on the way</span></h3>
                 {subgoals.length > 0 ? (
@@ -186,6 +183,12 @@ export function GoalPanel({ goal, color, dock, focusing, onToggle, onAsk, onDele
                     </ul>
                   </>
                 )}
+              </div>
+            )}
+
+            {tab === 'track' && (
+              <div className="gp-section" role="tabpanel">
+                <PanelTrack goal={goal} dock={dock} track={track} onToggle={onToggle} onAsk={onAsk} />
               </div>
             )}
 
@@ -239,7 +242,7 @@ export function GoalPanel({ goal, color, dock, focusing, onToggle, onAsk, onDele
             )}
           </div>
 
-          <div className="gp-dock">{dock}</div>
+          {pinnedDock && <div className="gp-dock">{dock}</div>}
         </div>
       </div>
     </aside>

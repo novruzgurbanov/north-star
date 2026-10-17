@@ -50,6 +50,7 @@ export async function initConstraints(): Promise<void> {
     'CREATE CONSTRAINT ns_user_id IF NOT EXISTS FOR (u: NSUser) REQUIRE u.id IS UNIQUE',
     'CREATE CONSTRAINT ns_goal_id IF NOT EXISTS FOR (g: NSGoal) REQUIRE g.id IS UNIQUE',
     'CREATE CONSTRAINT ns_milestone_id IF NOT EXISTS FOR (m: NSMilestone) REQUIRE m.id IS UNIQUE',
+    'CREATE CONSTRAINT ns_entry_id IF NOT EXISTS FOR (e: NSEntry) REQUIRE e.id IS UNIQUE', // v2 panels
   ];
   for (const s of statements) await run(s);
 }

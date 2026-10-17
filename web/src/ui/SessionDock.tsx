@@ -9,6 +9,8 @@ type Props = {
   camera: boolean
   next: NextStep | 'loading' | null
   recap: Recap | 'loading' | null
+  /** v2: session lengths chosen by the goal's panel (focus_session widget); defaults to DURATIONS */
+  durations?: number[]
   onCamera: (enabled: boolean) => void
   onStart: (task: string, minutes: number) => void
   onPause: () => void
@@ -68,13 +70,19 @@ export function SessionDock(p: Props) {
   const elsewhere = focus && focus.status !== 'idle' && focus.goalId !== goal.id ? focus : null
   const now = useNow(!!mine && mine.status === 'active')
   const suggestion = p.next && p.next !== 'loading' ? p.next : null
+  const durations = p.durations?.length ? p.durations : DURATIONS
+  // The suggested length snapped to the closest one this panel offers.
+  const fit = (m: number) => durations.reduce((best, d) => (Math.abs(d - m) < Math.abs(best - m) ? d : best), durations[0])
   const [task, setTask] = useState('')
-  const [minutes, setMinutes] = useState(25)
+  const [minutes, setMinutes] = useState(() => fit(25))
 
   // Adopt a fresh AI suggestion unless the user already typed their own task.
   useEffect(() => {
-    if (suggestion) { setTask(suggestion.task); setMinutes(suggestion.minutes) }
+    if (suggestion) { setTask(suggestion.task); setMinutes(fit(suggestion.minutes)) }
   }, [suggestion?.task, suggestion?.minutes]) // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => {
+    if (!durations.includes(minutes)) setMinutes(fit(minutes))
+  }, [durations.join(',')]) // eslint-disable-line react-hooks/exhaustive-deps
 
   if (goal.status === 'brainstorm') {
     const missing = goal.missing ?? []
@@ -170,7 +178,7 @@ export function SessionDock(p: Props) {
         onChange={e => setTask(e.target.value)} aria-label="Task for this focus session" />
       {suggestion?.why && task === suggestion.task && <p className="dockcard-why">{suggestion.why}</p>}
       <div className="dur" role="radiogroup" aria-label="Session length">
-        {DURATIONS.map(m => (
+        {durations.map(m => (
           <button key={m} role="radio" aria-checked={minutes === m} className={minutes === m ? 'is-active' : ''} onClick={() => setMinutes(m)}>{m} min</button>
         ))}
       </div>
