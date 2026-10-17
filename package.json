@@ -7,8 +7,9 @@
     "dev": "concurrently -k -n points,api,web -c yellow,magenta,cyan \"npm --prefix points run dev\" \"npm --prefix server run dev\" \"npm --prefix web run dev\"",
     "typecheck": "npm --prefix server run typecheck && npm --prefix web run typecheck",
     "desktop": "concurrently --kill-others-on-fail -n points,api,web,app -c yellow,magenta,cyan,green \"npm --prefix points run dev\" \"npm --prefix server run dev\" \"npm --prefix web run dev\" \"wait-on http://localhost:5173 && npm --prefix desktop start\"",
-    "tunnel": "\"C:/Program Files (x86)/cloudflared/cloudflared.exe\" tunnel --no-autoupdate --url http://localhost:8788",
-    "app": "npm --prefix desktop start"
+    "tunnel": "node scripts/tunnel.mjs",
+    "app": "npm --prefix desktop start",
+    "join": "concurrently --kill-others-on-fail -n api,web,app -c magenta,cyan,green \"npm --prefix server run dev\" \"npm --prefix web run dev\" \"wait-on http://localhost:5173 && npm --prefix desktop start\""
   },
   "devDependencies": {
     "concurrently": "^10.0.6",

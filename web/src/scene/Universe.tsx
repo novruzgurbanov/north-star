@@ -43,6 +43,7 @@ type Props = {
   others: PointsRow[]
   myScore: number
   focusing: string | null
+  nav?: boolean
 }
 
 function Nebula() {
@@ -65,7 +66,7 @@ function Nebula() {
   )
 }
 
-function CameraRig({ view, focus, panel }: { view: View; focus: Vec3; panel: boolean }) {
+function CameraRig({ view, focus, panel, nav }: { view: View; focus: Vec3; panel: boolean; nav: boolean }) {
   const { camera, size } = useThree()
   const look = useRef(new THREE.Vector3(...focus))
   const target = useMemo(() => new THREE.Vector3(), [])
@@ -76,7 +77,7 @@ function CameraRig({ view, focus, panel }: { view: View; focus: Vec3; panel: boo
     if (view === 'sky') {
       // Frame the star in the open sky: above the chat dock, and right of the goal panel when it is shown.
       const dist = narrow ? 30 : 24
-      const shiftX = panel && !narrow ? -4.5 : 0
+      const shiftX = narrow ? 0 : (panel ? -6.5 : 0) + (nav ? -2.4 : 0)
       const shiftY = narrow ? -5 : -3
       target.set(focus[0] + shiftX + state.pointer.x * 1.4, focus[1] + 1.4 + shiftY + state.pointer.y * 0.9, focus[2] + dist)
       lookTarget.set(focus[0] + shiftX, focus[1] + shiftY, focus[2])
@@ -110,7 +111,7 @@ function UserLabel({ position, name, goal, score, color, visible, you, live }: {
   )
 }
 
-export function Universe({ me, myGoals, bornAt, focusIndex, discovering, understanding, view, others, myScore, focusing }: Props) {
+export function Universe({ me, myGoals, bornAt, focusIndex, discovering, understanding, view, others, myScore, focusing, nav = false }: Props) {
   const color = me?.color ?? '#cfe2ff'
   const focus = myGoalOrigin(focusIndex)
   const cosmos = view === 'cosmos'
@@ -126,7 +127,7 @@ export function Universe({ me, myGoals, bornAt, focusIndex, discovering, underst
       <fog attach="fog" args={['#020309', 160, 520]} />
       <Stars radius={260} depth={160} count={9000} factor={5} saturation={0.15} fade speed={0.35} />
       <Nebula />
-      <CameraRig view={view} focus={focus} panel={!discovering && myGoals.length > 0} />
+      <CameraRig view={view} focus={focus} panel={!discovering && myGoals.length > 0} nav={nav} />
 
       {myGoals.map((g, i) => (
         <Constellation key={g.id} goal={g} color={color} origin={myGoalOrigin(i)} bornAt={bornAt[g.id]}

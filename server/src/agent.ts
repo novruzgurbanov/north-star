@@ -1,6 +1,6 @@
 import 'dotenv/config';
 import OpenAI from 'openai';
-import { DETAIL_KINDS, type ChatMessage, type DetailKind, type Goal, type NewGoal, type Stats } from './types.js';
+import { DETAIL_KINDS, type ChatMessage, type DetailKind, type Goal, type NewGoal, type Settings, type Stats } from './types.js';
 
 const MODEL = process.env.CHAT_MODEL || 'zai-org/glm-5.3-flash';
 
@@ -88,6 +88,21 @@ Respond with ONLY a JSON object:
 // ---------------------------------------------------------------------------
 // Shared plumbing
 // ---------------------------------------------------------------------------
+
+// Verbatim helpfulness style lines from ../SETTINGS.md; 'balanced' adds nothing.
+const HELPFULNESS_LINES: Record<Settings['helpfulness'], string> = {
+  quiet:
+    'Style: be brief. One short sentence. Do not ask a question unless the user asks for help, and never push for details.',
+  balanced: '',
+  proactive:
+    'Style: be an engaged coach. Each reply proposes one concrete next step, and in brainstorm asks one question that moves the goal toward ready.',
+};
+
+/** Append the user's helpfulness style line as the last line of a system prompt. */
+function withHelpfulness(system: string, settings: Settings): string {
+  const line = HELPFULNESS_LINES[settings.helpfulness];
+  return line ? `${system}\n${line}` : system;
+}
 
 function clamp01(n: number): number {
   return Math.max(0, Math.min(1, n));
@@ -273,7 +288,7 @@ function parseDetailCandidate(raw: unknown): { kind: DetailKind; text: string } 
   return { kind: kind as DetailKind, text };
 }
 
-export async function coach(goal: Goal, stats: Stats, messages: ChatMessage[]): Promise<CoachResult> {
+export async function coach(goal: Goal, stats: Stats, messages: ChatMessage[], settings: Settings): Promise<CoachResult> {
   const goalJson = JSON.stringify({
     id: goal.id,
     title: goal.title,
@@ -285,10 +300,13 @@ export async function coach(goal: Goal, stats: Stats, messages: ChatMessage[]): 
     milestones: goal.milestones.map((m) => ({ id: m.id, title: m.title, done: m.done })),
     details: goal.details.map((d) => ({ kind: d.kind, text: d.text })),
   });
-  const system = COACH_SYSTEM_TEMPLATE // function replacements avoid "$" patterns in JSON
-    .replace('{GOAL_JSON}', () => goalJson)
-    .replace('{TODAY}', () => new Date().toISOString().slice(0, 10))
-    .replace('{STATS_JSON}', () => JSON.stringify(stats));
+  const system = withHelpfulness(
+    COACH_SYSTEM_TEMPLATE // function replacements avoid "$" patterns in JSON
+      .replace('{GOAL_JSON}', () => goalJson)
+      .replace('{TODAY}', () => new Date().toISOString().slice(0, 10))
+      .replace('{STATS_JSON}', () => JSON.stringify(stats)),
+    settings
+  );
 
   const parsed = await chatJson(system, messages);
   if (!parsed) return { reply: FALLBACK_REPLY, actions: [], suggestions: [] };
@@ -344,8 +362,8 @@ export interface CaptureResult {
   details: Array<{ kind: DetailKind; text: string }>;
 }
 
-export async function capture(messages: ChatMessage[]): Promise<CaptureResult> {
-  const parsed = await chatJson(CAPTURE_SYSTEM, messages);
+export async function capture(messages: ChatMessage[], settings: Settings): Promise<CaptureResult> {
+  const parsed = await chatJson(withHelpfulness(CAPTURE_SYSTEM, settings), messages);
   if (!parsed) {
     return { isGoal: false, title: '', reply: FALLBACK_REPLY, suggestions: [], details: [] };
   }
@@ -378,13 +396,24 @@ Judge only what is visible.
 - uncertain: anything you cannot judge fairly.
 Be fair: a chat or music app in a corner is fine when the main window is work. Do not describe the person's appearance and do not quote private content from the screen.
 
-When off_track, also write "roast": one playful, witty line (max 18 words) teasing what they are doing instead of their goal, based on what is on the screen or what they are doing on camera. Tease the activity, never the person: nothing about looks, body, clothes, age, gender, ethnicity, their home, or private content on screen. Keep it PG, no swearing, and tie it back to their goal when you can, for example: "Cat video #47: the famous missing chapter of your thesis." Otherwise "roast" is "".
+{ROAST_PARAGRAPH}
 
 Respond with ONLY a JSON object:
 {"verdict": "on_track" | "off_track" | "uncertain", "confidence": number 0-1,
  "reason": string (max 14 words, second person, e.g. "You're editing your thesis draft in Word."),
  "nudge": string (one kind sentence to bring them back, only when off_track, else ""),
  "roast": string}`;
+
+// Roast paragraph for the default 'mild'; replaced when roast is 'off', extended when 'spicy' (../SETTINGS.md).
+const ROAST_MILD = `When off_track, also write "roast": one playful, witty line (max 18 words) teasing what they are doing instead of their goal, based on what is on the screen or what they are doing on camera. Tease the activity, never the person: nothing about looks, body, clothes, age, gender, ethnicity, their home, or private content on screen. Keep it PG, no swearing, and tie it back to their goal when you can, for example: "Cat video #47: the famous missing chapter of your thesis." Otherwise "roast" is "".`;
+
+function roastParagraph(roast: Settings['roast']): string {
+  if (roast === 'off') return 'Never write a roast; "roast" must be "".';
+  if (roast === 'spicy') {
+    return `${ROAST_MILD} Make it sharper and more sarcastic, like a friend who roasts you, but still PG and still never about the person.`;
+  }
+  return ROAST_MILD;
+}
 
 export interface FocusVerdict {
   verdict: 'on_track' | 'off_track' | 'uncertain';
@@ -396,7 +425,7 @@ export interface FocusVerdict {
 
 const asDataUrl = (b64: string) => (b64.startsWith('data:') ? b64 : `data:image/jpeg;base64,${b64}`);
 
-export async function checkFocus(goal: Goal, screen: string, camera: string | null): Promise<FocusVerdict> {
+export async function checkFocus(goal: Goal, screen: string, camera: string | null, settings: Settings): Promise<FocusVerdict> {
   const next = goal.milestones.find((m) => !m.done);
   const goalJson = JSON.stringify({
     title: goal.title,
@@ -413,6 +442,9 @@ export async function checkFocus(goal: Goal, screen: string, camera: string | nu
     { type: 'image_url', image_url: { url: asDataUrl(screen) } },
   ];
   if (camera) content.push({ type: 'image_url', image_url: { url: asDataUrl(camera) } });
+  const system = FOCUS_SYSTEM_TEMPLATE // function replacements avoid "$" patterns in JSON
+    .replace('{GOAL_JSON}', () => goalJson)
+    .replace('{ROAST_PARAGRAPH}', () => roastParagraph(settings.roast));
 
   for (let attempt = 0; attempt < 2; attempt++) {
     try {
@@ -420,7 +452,7 @@ export async function checkFocus(goal: Goal, screen: string, camera: string | nu
         model: VISION_MODEL,
         temperature: 0.2,
         messages: [
-          { role: 'system', content: FOCUS_SYSTEM_TEMPLATE.replace('{GOAL_JSON}', () => goalJson) },
+          { role: 'system', content: system },
           { role: 'user', content },
         ],
       } as never);
@@ -433,8 +465,9 @@ export async function checkFocus(goal: Goal, screen: string, camera: string | nu
       const confidence = clamp01(Number(parsed.confidence) || 0);
       const reason = String(parsed.reason ?? '').trim().slice(0, 140) || 'Checked your screen.';
       const nudge = verdict === 'off_track' ? String(parsed.nudge ?? '').trim().slice(0, 200) : '';
-      // Roast only when off_track, trimmed, max 200 chars.
-      const roast = verdict === 'off_track' ? String(parsed.roast ?? '').trim().slice(0, 200) : '';
+      // Roast only when off_track and allowed, trimmed, max 200 chars; roast 'off' forces "".
+      const roast =
+        settings.roast !== 'off' && verdict === 'off_track' ? String(parsed.roast ?? '').trim().slice(0, 200) : '';
       return { verdict, confidence, reason, nudge, roast };
     } catch {
       // one retry

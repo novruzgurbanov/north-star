@@ -81,12 +81,26 @@ function keysMatch(provided: string | undefined): boolean {
   return timingSafeEqual(a, b);
 }
 
-/** Load every player with their intervals, compute stats, sort and rank. */
-async function loadRows(now: number): Promise<Row[]> {
+type Mode = 'real' | 'demo';
+
+/** A player's row ranked among real players, or among everyone for a seeded demo player. */
+async function findRow(playerId: string): Promise<Row | undefined> {
+  const now = Date.now();
+  return (await loadRows(now, 'real')).find(r => r.id === playerId)
+    ?? (await loadRows(now, 'demo')).find(r => r.id === playerId);
+}
+
+/**
+ * Load players with their intervals, compute stats, sort and rank.
+ * 'real' (default) is only people who actually connected; 'demo' also includes the seeded cast.
+ */
+async function loadRows(now: number, mode: Mode = 'real'): Promise<Row[]> {
   const records = await run(
     `MATCH (p:PSPlayer)
+     WHERE $mode = 'demo' OR coalesce(p.seeded, false) = false
      OPTIONAL MATCH (p)-[:LOGGED]->(i:PSInterval)
      RETURN p ${PLAYER_PROJECTION} AS player, collect(i ${INTERVAL_PROJECTION}) AS intervals`,
+    { mode },
   );
   const rows = records.map(r => ({
     ...toPlayer(r.player),
@@ -167,8 +181,7 @@ app.patch('/v1/players/:id', async (req, res) => {
 
 app.get('/v1/players/:id', async (req, res) => {
   const id = String(req.params.id);
-  const rows = await loadRows(Date.now());
-  const row = rows.find(r => r.id === id);
+  const row = await findRow(id);
   if (!row) {
     res.status(404).json({ error: 'player not found' });
     return;
@@ -234,8 +247,7 @@ app.post('/v1/focus', async (req, res) => {
     );
   }
 
-  const rows = await loadRows(Date.now());
-  const row = rows.find(r => r.id === body.playerId);
+  const row = await findRow(body.playerId);
   if (!row) {
     res.status(404).json({ error: 'player not found' });
     return;
@@ -243,8 +255,9 @@ app.post('/v1/focus', async (req, res) => {
   res.json({ row });
 });
 
-app.get('/v1/leaderboard', async (_req, res) => {
-  res.json({ rows: await loadRows(Date.now()) });
+app.get('/v1/leaderboard', async (req, res) => {
+  const mode: Mode = req.query.mode === 'demo' ? 'demo' : 'real';
+  res.json({ rows: await loadRows(Date.now(), mode), mode });
 });
 
 // Unknown paths get JSON, not the HTML default.

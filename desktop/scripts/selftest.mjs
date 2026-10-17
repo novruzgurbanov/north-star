@@ -20,7 +20,7 @@ const PAGE = `<!doctype html><html lang="en"><meta charset="utf-8"><title>North 
 (async () => {
   const bridge = window.northStarDesktop;
   if (!bridge || bridge.isDesktop !== true || typeof bridge.platform !== 'string') throw new Error('Bridge missing');
-  for (const name of ['start','pause','resume','stop','setCamera','getState','onState']) {
+  for (const name of ['start','pause','resume','stop','setCamera','configure','getState','onState']) {
     if (typeof bridge.focus[name] !== 'function') throw new Error('Bridge method missing: ' + name);
   }
   let before = await bridge.focus.getState();

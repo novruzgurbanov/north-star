@@ -66,10 +66,11 @@ test('start publishes the exact bridge state and schedules first check at 5 seco
   const state = controller.start(OPTIONS);
   assert.deepEqual(Object.keys(state).sort(), [
     'status', 'userId', 'goalId', 'goalTitle', 'startedAt', 'nextCheckAt', 'checkSeconds',
-    'sessionVerifiedSeconds', 'checks', 'cameraEnabled', 'cameraActive', 'lastCheck', 'lastResult', 'error',
-    'notice',
+    'notificationsEnabled', 'sessionVerifiedSeconds', 'checks', 'cameraEnabled', 'cameraActive',
+    'lastCheck', 'lastResult', 'error', 'notice',
   ].sort());
   assert.equal(state.notice, null);
+  assert.equal(state.notificationsEnabled, true);
   assert.equal(state.status, 'active');
   assert.equal(state.startedAt, new Date(0).toISOString());
   assert.equal(state.nextCheckAt, new Date(5_000).toISOString());
@@ -407,4 +408,126 @@ test('camera loss preserves the user preference and invalidates late activation'
   await flush();
   assert.equal(controller.getState().cameraEnabled, true);
   assert.equal(controller.getState().cameraActive, false);
+});
+
+test('configure shortens the interval and reschedules the pending check to lastCheck + interval', async () => {
+  const { controller, clock, requests } = harness({ checkSeconds: 60 });
+  controller.start(OPTIONS);
+  await clock.tick(5_000); // first check at t=5s; the next one is armed to fire at t=65s
+  await clock.tick(1_000); // t=6s
+  const state = controller.configure({ checkSeconds: 10 });
+  assert.equal(state.checkSeconds, 10);
+  assert.equal(state.nextCheckAt, new Date(15_000).toISOString()); // 5s + 10s, not 65s
+  await clock.tick(8_999);
+  assert.equal(requests.length, 1);
+  await clock.tick(1);
+  assert.equal(requests.length, 2); // fired at t=15s
+  assert.equal(requests[1].sinceSeconds, 10);
+  assert.equal(controller.getState().nextCheckAt, new Date(25_000).toISOString()); // 10s after check 2
+  await clock.tick(9_999);
+  assert.equal(requests.length, 2);
+  await clock.tick(1);
+  assert.equal(requests.length, 3); // every following check keeps the new interval
+});
+
+test('a longer interval leaves the pending check in place; the next one uses it', async () => {
+  const { controller, clock, requests } = harness();
+  controller.start(OPTIONS);
+  await clock.tick(5_000); // check 1 done; pending check fires at t=15s
+  const state = controller.configure({ checkSeconds: 30 });
+  assert.equal(state.checkSeconds, 30);
+  assert.equal(state.nextCheckAt, new Date(15_000).toISOString()); // untouched
+  await clock.tick(10_000);
+  assert.equal(requests.length, 2); // still fired at t=15s
+  await clock.tick(29_999);
+  assert.equal(requests.length, 2);
+  await clock.tick(1);
+  assert.equal(requests.length, 3); // t=45s, exactly 30s after check 2
+});
+
+test('a rescheduled check never fires earlier than 1 second from now', async () => {
+  const { controller, clock, requests } = harness({ checkSeconds: 300 });
+  controller.start(OPTIONS);
+  await clock.tick(5_000); // check 1 at t=5s; pending fires at t=305s
+  await clock.tick(195_000); // t=200s
+  const state = controller.configure({ checkSeconds: 10 });
+  // lastCheck (t=5s) + 10s is already in the past, so it clamps to t=201s.
+  assert.equal(state.nextCheckAt, new Date(201_000).toISOString());
+  await clock.tick(999);
+  assert.equal(requests.length, 1);
+  await clock.tick(1);
+  assert.equal(requests.length, 2);
+});
+
+test('invalid configure arguments are ignored, valid siblings still apply', async () => {
+  const { controller, clock, requests } = harness();
+  controller.start(OPTIONS);
+  await clock.tick(5_000);
+  const before = controller.getState();
+  for (const options of [null, 'x', 42, [], {},
+    { checkSeconds: 5 }, { checkSeconds: 301 }, { checkSeconds: 20.5 },
+    { checkSeconds: '30' }, { checkSeconds: Number.NaN }, { notifications: 'yes' },
+    { notifications: 1 }]) {
+    assert.deepEqual(controller.configure(options), before);
+  }
+  const state = controller.configure({ checkSeconds: 5, notifications: false });
+  assert.equal(state.checkSeconds, before.checkSeconds);
+  assert.equal(state.notificationsEnabled, false);
+  assert.equal(controller.configure({ notifications: true }).notificationsEnabled, true);
+  await clock.tick(10_000);
+  assert.equal(requests.length, 2); // the interval was never touched; checks keep firing
+});
+
+test('notifications disabled never notify; re-enabling restores them', async () => {
+  const { controller, clock, notifications } = harness({ check: async () => result({
+    verdict: 'off_track', confidence: 0.9, counted: false, countedSeconds: 0,
+  }) });
+  controller.start(OPTIONS);
+  assert.equal(controller.configure({ notifications: false }).notificationsEnabled, false);
+  await clock.tick(65_000); // seven confident off-track checks
+  assert.equal(notifications.length, 0);
+  assert.equal(controller.getState().error, null);
+  controller.configure({ notifications: true });
+  await clock.tick(10_000);
+  assert.equal(notifications.length, 1);
+  await clock.tick(10_000); // inside the 20s cooldown
+  assert.equal(notifications.length, 1);
+});
+
+test('notifyAbove from the API is respected: 0.6 notifies at 0.65 and 0.6', async () => {
+  const confidences = [0.65, 0.6, 0.6];
+  const { controller, clock, notifications } = harness({ check: async () => result({
+    verdict: 'off_track', confidence: confidences.shift(), notifyAbove: 0.6,
+    counted: false, countedSeconds: 0,
+  }) });
+  controller.start(OPTIONS);
+  await clock.tick(5_000);
+  assert.equal(notifications.length, 1);
+  await clock.tick(10_000); // cooldown suppresses the second
+  assert.equal(notifications.length, 1);
+  await clock.tick(10_000);
+  assert.equal(notifications.length, 2);
+  assert.equal(notifications[1].at - notifications[0].at, 20_000);
+});
+
+test('notifyAbove 0.85 does not notify at 0.8', async () => {
+  const { controller, clock, notifications } = harness({ check: async () => result({
+    verdict: 'off_track', confidence: 0.8, notifyAbove: 0.85, counted: false, countedSeconds: 0,
+  }) });
+  controller.start(OPTIONS);
+  await clock.tick(65_000);
+  assert.equal(notifications.length, 0);
+});
+
+test('a malformed notifyAbove falls back to the 0.7 default', async () => {
+  const confidences = [0.65, 0.75, 0.65, 0.65];
+  const payloads = ['high', 1.5, -0.5, null];
+  const { controller, clock, notifications } = harness({ check: async () => result({
+    verdict: 'off_track', confidence: confidences.shift(), notifyAbove: payloads.shift(),
+    counted: false, countedSeconds: 0,
+  }) });
+  controller.start(OPTIONS);
+  await clock.tick(35_000); // checks at 5s, 15s, 25s, 35s
+  assert.equal(notifications.length, 1); // only the 0.75 check clears the 0.7 fallback
+  assert.equal(notifications[0].at, 15_000);
 });

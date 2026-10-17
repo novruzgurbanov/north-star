@@ -43,6 +43,7 @@ interface NorthStarDesktop {
     resume(): Promise<FocusState>
     stop(): Promise<FocusState>
     setCamera(enabled: boolean): Promise<FocusState>
+    configure(opts: { checkSeconds?: number; notifications?: boolean }): Promise<FocusState>  // see SETTINGS.md
     getState(): Promise<FocusState>
     onState(listener: (state: FocusState) => void): () => void   // returns unsubscribe
   }

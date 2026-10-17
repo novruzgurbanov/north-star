@@ -1,6 +1,7 @@
 // Soft synthesized chimes: no audio assets, everything built with WebAudio.
 
 let ctx: AudioContext | null = null
+let enabled = true
 let out: GainNode | null = null
 
 function audio() {
@@ -29,6 +30,7 @@ function audio() {
 
 // A bell-ish tone: near-harmonic partials with fast attack and long, soft decay.
 function bell(freq: number, when: number, gain: number, decay = 2.6) {
+  if (!enabled) return
   const { ctx, out } = audio()
   const t0 = ctx.currentTime + when
   const partials: [number, number, number][] = [
@@ -55,6 +57,9 @@ const PENTATONIC = [0, 2, 4, 7, 9, 12, 14, 16]
 const hz = (semitones: number, base = 659.25) => base * Math.pow(2, semitones / 12)
 
 export const sound = {
+  setEnabled(on: boolean) {
+    enabled = on
+  },
   /** Called on a user gesture so the context is allowed to start. */
   unlock() {
     audio()

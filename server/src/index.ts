@@ -8,6 +8,7 @@ import * as points from './points.js';
 import { nanoid } from 'nanoid';
 import * as model from './model.js';
 import { getStatus, transcribe, warmUp } from './transcribe.js';
+import { COUNT_CONFIDENCE, NOTIFY_ABOVE } from './types.js';
 import type { AgentEvent, ChatMessage, Goal, Milestone, Stats, User } from './types.js';
 
 class HttpError extends Error {
@@ -111,18 +112,41 @@ app.get('/api/users/:userId', async (req: Request, res: Response) => {
   const user = await model.getUser(userId);
   if (!user) throw new HttpError(404, 'user not found');
   const playerId = await ensurePlayer(user);
-  const [goals, stats, row] = await Promise.all([
+  const [goals, stats, row, settings] = await Promise.all([
     model.loadGoals(userId),
     model.computeStats(userId),
     playerId ? points.getRow(playerId) : Promise.resolve(null),
+    model.getSettings(userId),
   ]);
-  res.json({ user, goals, stats, points: row });
+  res.json({ user, goals, stats, points: row, settings });
+});
+
+app.get('/api/users/:userId/settings', async (req: Request, res: Response) => {
+  const { userId } = req.params as Record<string, string>;
+  const user = await model.getUser(userId);
+  if (!user) throw new HttpError(404, 'user not found');
+  res.json({ settings: await model.getSettings(userId) });
+});
+
+app.put('/api/users/:userId/settings', async (req: Request, res: Response) => {
+  const { userId } = req.params as Record<string, string>;
+  const user = await model.getUser(userId);
+  if (!user) throw new HttpError(404, 'user not found');
+  const before = await model.getSettings(userId);
+  const settings = await model.updateSettings(userId, req.body);
+  // Sharing just turned off: wipe the goal title on the shared leaderboard (fails soft).
+  if (before.shareGoalTitle && !settings.shareGoalTitle) {
+    const playerId = await ensurePlayer(user);
+    if (playerId) void points.setGoalTitle(playerId, null);
+  }
+  res.json({ settings });
 });
 
 app.post('/api/chat', async (req: Request, res: Response) => {
   const { userId, goalId, messages } = chatSchema.parse(req.body);
   const user = await model.getUser(userId);
   if (!user) throw new HttpError(404, 'user not found');
+  const settings = await model.getSettings(userId);
 
   const events: AgentEvent[] = [];
   let reply: string;
@@ -139,7 +163,7 @@ app.post('/api/chat', async (req: Request, res: Response) => {
     const statusBefore = goal.status;
     let whyEmpty = !goal.why.trim(); // a motivation detail can fill an empty why
     const stats = await model.computeStats(userId);
-    const result = await coach(goal, stats, messages as ChatMessage[]);
+    const result = await coach(goal, stats, messages as ChatMessage[], settings);
     reply = result.reply;
     suggestions = result.suggestions;
     for (const action of result.actions) {
@@ -179,7 +203,7 @@ app.post('/api/chat', async (req: Request, res: Response) => {
   } else {
     // discovering: capture the goal in one message; details come later, in that goal's chat
     phase = 'discovering';
-    const result = await capture(messages as ChatMessage[]);
+    const result = await capture(messages as ChatMessage[], settings);
     reply = result.reply;
     suggestions = result.suggestions;
     understanding = 0; // small talk (or a failed capture) creates nothing
@@ -206,9 +230,10 @@ app.post('/api/chat', async (req: Request, res: Response) => {
             whyFilled = true;
           }
         }
-        // Share the new goal's title with the multiplayer cosmos (fails soft).
-        const playerId = await ensurePlayer(user, goal.title);
-        if (playerId) void points.setGoalTitle(playerId, goal.title);
+        // Share the new goal's title with the multiplayer cosmos (fails soft; never while sharing is off).
+        const share = settings.shareGoalTitle;
+        const playerId = await ensurePlayer(user, share ? goal.title : undefined);
+        if (playerId && share) void points.setGoalTitle(playerId, goal.title);
       }
     }
   }
@@ -288,9 +313,12 @@ app.post('/api/users/:userId/active-goal', async (req: Request, res: Response) =
   if (!user) throw new HttpError(404, 'user not found');
   const goal = await model.getGoal(userId, goalId);
   if (!goal) throw new HttpError(404, 'goal not found');
-  const playerId = await ensurePlayer(user, goal.title);
-  const player = playerId ? await points.setGoalTitle(playerId, goal.title) : null;
-  const row = player ? await points.getRow(player.id) : null;
+  // While shareGoalTitle is off, never send the goal title to the points service.
+  const settings = await model.getSettings(userId);
+  const share = settings.shareGoalTitle;
+  const playerId = await ensurePlayer(user, share ? goal.title : undefined);
+  if (playerId && share) await points.setGoalTitle(playerId, goal.title);
+  const row = playerId ? await points.getRow(playerId) : null;
   res.json({ ok: true, points: row });
 });
 
@@ -305,18 +333,22 @@ app.post('/api/focus/check', async (req: Request, res: Response) => {
 
   const sinceSeconds = Math.min(900, Math.max(5, body.sinceSeconds));
   const started = Date.now();
-  const verdict = await checkFocus(goal, body.screen, body.camera ?? null);
-  const counted = verdict.verdict === 'on_track' && verdict.confidence >= 0.6;
+  const settings = await model.getSettings(user.id);
+  const verdict = await checkFocus(goal, body.screen, body.camera ?? null, settings);
+  const counted = verdict.verdict === 'on_track' && verdict.confidence >= COUNT_CONFIDENCE[settings.strictness];
 
   let row: points.PointsRow | null = null;
   if (counted) {
     const end = new Date();
     const start = new Date(end.getTime() - sinceSeconds * 1000);
     await model.logActivity({ userId: user.id, goalId: goal.id, onTask: true, minutes: sinceSeconds / 60, source: 'desktop' });
-    const playerId = await ensurePlayer(user, goal.title);
+    // While shareGoalTitle is off, never send the goal title to the points service.
+    const share = settings.shareGoalTitle;
+    const playerId = await ensurePlayer(user, share ? goal.title : undefined);
     if (playerId) {
       row = await points.reportFocus({
-        id: nanoid(), playerId, start: start.toISOString(), end: end.toISOString(), goalTitle: goal.title,
+        id: nanoid(), playerId, start: start.toISOString(), end: end.toISOString(),
+        goalTitle: share ? goal.title : undefined,
       });
     }
   } else if (user.pointsPlayerId) {
@@ -329,19 +361,20 @@ app.post('/api/focus/check', async (req: Request, res: Response) => {
     ...verdict,
     counted,
     countedSeconds: counted ? sinceSeconds : 0,
+    notifyAbove: NOTIFY_ABOVE[settings.strictness],
     goal: fresh ?? goal,
     stats,
     points: row,
   });
 });
 
-app.get('/api/cosmos', async (_req: Request, res: Response) => {
-  const { rows, offline } = await points.leaderboard();
+app.get('/api/cosmos', async (req: Request, res: Response) => {
+  const { rows, offline } = await points.leaderboard(req.query.mode === 'demo' ? 'demo' : 'real');
   res.json({ players: rows, offline });
 });
 
-app.get('/api/leaderboard', async (_req: Request, res: Response) => {
-  res.json(await points.leaderboard());
+app.get('/api/leaderboard', async (req: Request, res: Response) => {
+  res.json(await points.leaderboard(req.query.mode === 'demo' ? 'demo' : 'real'));
 });
 
 // ---------------------------------------------------------------------------

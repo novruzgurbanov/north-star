@@ -74,7 +74,8 @@ export async function reportFocus(input: {
   return res?.row ?? null;
 }
 
-export async function leaderboard(): Promise<{ rows: PointsRow[]; offline: boolean }> {
-  const res = await call<{ rows: PointsRow[] }>('leaderboard', 'GET', '/v1/leaderboard');
+/** 'real' = only people who actually connected; 'demo' also shows the seeded cast. */
+export async function leaderboard(mode: 'real' | 'demo' = 'real'): Promise<{ rows: PointsRow[]; offline: boolean }> {
+  const res = await call<{ rows: PointsRow[] }>('leaderboard', 'GET', `/v1/leaderboard?mode=${mode}`);
   return res ? { rows: res.rows, offline: false } : { rows: [], offline: true };
 }

@@ -1,6 +1,7 @@
 import { nanoid } from 'nanoid';
+import { z } from 'zod';
 import { run, toNum } from './db.js';
-import { DETAIL_KINDS, type Goal, type GoalDetail, type DetailKind, type Milestone, type NewGoal, type Stats, type User } from './types.js';
+import { DEFAULT_SETTINGS, DETAIL_KINDS, type Goal, type GoalDetail, type DetailKind, type Milestone, type NewGoal, type Settings, type Stats, type User } from './types.js';
 
 export const COLORS = ['#8ecbff', '#ffd59e', '#c9a7ff', '#9effd8', '#ff9ec4', '#fff3b0', '#a7c4ff', '#ffb38a'];
 
@@ -177,6 +178,70 @@ export async function getUser(userId: string): Promise<User | null> {
 export async function getAllUsers(): Promise<User[]> {
   const rows = await run('MATCH (u: NSUser) RETURN u {.*} AS user ORDER BY u.createdAt');
   return rows.map((r) => mapUser(r.user as Record<string, unknown>));
+}
+
+// ---------------------------------------------------------------------------
+// Per-user settings (../SETTINGS.md; stored as a JSON string on NSUser)
+// ---------------------------------------------------------------------------
+
+/** Exact enums, checkSeconds integer 10..300, booleans — anything else is a 400. */
+export const settingsSchema = z.object({
+  helpfulness: z.enum(['quiet', 'balanced', 'proactive']),
+  checkSeconds: z
+    .number()
+    .int({ message: 'checkSeconds must be an integer' })
+    .min(10, { message: 'checkSeconds must be at least 10' })
+    .max(300, { message: 'checkSeconds must be at most 300' }),
+  strictness: z.enum(['relaxed', 'normal', 'strict']),
+  roast: z.enum(['off', 'mild', 'spicy']),
+  notifications: z.boolean(),
+  cameraByDefault: z.boolean(),
+  suggestions: z.boolean(),
+  sounds: z.boolean(),
+  shareGoalTitle: z.boolean(),
+});
+
+const settingsUpdateSchema = settingsSchema.partial();
+
+/**
+ * Defaults merged with what is stored: unknown keys dropped, invalid values
+ * replaced by their defaults.
+ */
+export function sanitizeSettings(raw: unknown): Settings {
+  const out: Settings = { ...DEFAULT_SETTINGS };
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return out;
+  const o = raw as Record<string, unknown>;
+  for (const key of Object.keys(DEFAULT_SETTINGS) as Array<keyof Settings>) {
+    const result = settingsSchema.shape[key].safeParse(o[key]);
+    if (result.success) (out as Record<string, unknown>)[key] = result.data;
+  }
+  return out;
+}
+
+/** Stored settings merged with defaults; nothing stored (or corrupt) -> defaults. */
+export async function getSettings(userId: string): Promise<Settings> {
+  const rows = await run('MATCH (u: NSUser {id: $userId}) RETURN u.settings AS settings', { userId });
+  const raw = rows[0]?.settings;
+  if (typeof raw !== 'string') return { ...DEFAULT_SETTINGS };
+  try {
+    return sanitizeSettings(JSON.parse(raw));
+  } catch {
+    return { ...DEFAULT_SETTINGS };
+  }
+}
+
+/** Validate a partial update with zod, merge over the stored settings, save, return the full settings. */
+export async function updateSettings(userId: string, partial: unknown): Promise<Settings> {
+  const parsed = settingsUpdateSchema.parse(partial ?? {});
+  const patch = Object.fromEntries(
+    Object.entries(parsed as Record<string, unknown>).filter(([, v]) => v !== undefined)
+  ) as Partial<Settings>;
+  const merged: Settings = { ...(await getSettings(userId)), ...patch };
+  await run('MATCH (u: NSUser {id: $userId}) SET u.settings = $json', {
+    userId,
+    json: JSON.stringify(merged),
+  });
+  return merged;
 }
 
 // ---------------------------------------------------------------------------

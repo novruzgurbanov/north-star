@@ -9,6 +9,7 @@ contextBridge.exposeInMainWorld('northStarDesktop', {
     resume: () => ipcRenderer.invoke('focus:resume'),
     stop: () => ipcRenderer.invoke('focus:stop'),
     setCamera: (enabled) => ipcRenderer.invoke('focus:set-camera', enabled),
+    configure: (options) => ipcRenderer.invoke('focus:configure', options),
     getState: () => ipcRenderer.invoke('focus:get-state'),
     onState: (listener) => {
       if (typeof listener !== 'function') return () => {};

@@ -20,6 +20,9 @@ const rawSeconds = Number(process.env.CHECK_SECONDS || 20);
 const CHECK_SECONDS = Number.isFinite(rawSeconds) ? Math.max(10, rawSeconds) : 20;
 const rawCooldown = Number(process.env.NOTIFY_COOLDOWN_SECONDS || 20);
 const NOTIFY_COOLDOWN_SECONDS = Number.isFinite(rawCooldown) ? Math.max(5, rawCooldown) : 20;
+// How long a roast stays on screen before we dismiss it (Windows' own default is ~5 s).
+const rawShow = Number(process.env.NOTIFY_SHOW_SECONDS || 25);
+const NOTIFY_SHOW_SECONDS = Number.isFinite(rawShow) ? Math.min(120, Math.max(5, rawShow)) : 25;
 const SELFTEST = process.env.NORTH_STAR_SELFTEST === '1';
 const CAPTURE_URL = pathToFileURL(join(ROOT, 'capture.html')).href;
 const runtimePath = join(ROOT, '.north-star-runtime', SELFTEST ? 'selftest' : 'app');
@@ -80,13 +83,23 @@ function notify(body) {
     return;
   }
   try {
-    const notification = new Notification({ title: 'North Star', body, silent: false });
+    // A newer roast replaces the one still on screen instead of stacking up.
+    for (const previous of notifications) {
+      try { previous.close(); } catch { /* already gone */ }
+    }
+    notifications.clear();
+    // Windows hides normal toasts after ~5 s; 'never' keeps it up, and we close it ourselves.
+    const notification = new Notification({ title: 'North Star', body, silent: false, timeoutType: 'never' });
     notifications.add(notification);
-    notification.on('click', showMainWindow);
+    const autoClose = setTimeout(() => {
+      try { notification.close(); } catch { /* already gone */ }
+    }, NOTIFY_SHOW_SECONDS * 1_000);
+    const forget = () => { clearTimeout(autoClose); notifications.delete(notification); };
+    notification.on('click', () => { forget(); showMainWindow(); });
     notification.on('show', () => focus?.setNotice(null));
-    notification.on('close', () => notifications.delete(notification));
+    notification.on('close', forget);
     notification.on('failed', () => {
-      notifications.delete(notification);
+      forget();
       focus?.setNotice(BLOCKED_NOTICE);
     });
     notification.show();
@@ -196,6 +209,19 @@ function registerIPC() {
       return focus[methods[action] || action](...args);
     });
   }
+  // configure() applies field by field, so one malformed key must not drop a
+  // valid sibling; the controller re-validates everything it is given.
+  ipcMain.handle('focus:configure', (event, ...args) => {
+    if (!trustedRenderer(event) || args.length !== 1 || !args[0]
+      || typeof args[0] !== 'object' || Array.isArray(args[0])) return focus.getState();
+    const options = {};
+    if (Number.isInteger(args[0].checkSeconds)
+      && args[0].checkSeconds >= 10 && args[0].checkSeconds <= 300) {
+      options.checkSeconds = args[0].checkSeconds;
+    }
+    if (typeof args[0].notifications === 'boolean') options.notifications = args[0].notifications;
+    return focus.configure(options);
+  });
   ipcMain.on('capture:reply', (event, reply, ...extra) => {
     if (!captureWindow || captureWindow.isDestroyed() || extra.length
       || event.sender !== captureWindow.webContents

@@ -52,6 +52,41 @@ export type AgentEvent =
 
 export type Phase = 'discovering' | 'coaching';
 
+// Per-user settings (../SETTINGS.md), stored as a JSON string on NSUser.
+export type Helpfulness = 'quiet' | 'balanced' | 'proactive';
+export type Strictness = 'relaxed' | 'normal' | 'strict';
+export type RoastLevel = 'off' | 'mild' | 'spicy';
+
+export type Settings = {
+  helpfulness: Helpfulness;
+  checkSeconds: number; // 10..300, desktop focus loop
+  strictness: Strictness;
+  roast: RoastLevel; // always PG
+  notifications: boolean; // desktop toasts
+  cameraByDefault: boolean;
+  suggestions: boolean; // reply chips
+  sounds: boolean;
+  shareGoalTitle: boolean; // goal title on the shared leaderboard
+};
+
+export const DEFAULT_SETTINGS: Settings = {
+  helpfulness: 'balanced',
+  checkSeconds: 20,
+  strictness: 'normal',
+  roast: 'mild',
+  notifications: true,
+  cameraByDefault: false,
+  suggestions: true,
+  sounds: true,
+  shareGoalTitle: true,
+};
+
+/** Count on-track focus time when confidence >= this (per strictness). */
+export const COUNT_CONFIDENCE: Record<Strictness, number> = { relaxed: 0.5, normal: 0.6, strict: 0.75 };
+
+/** Desktop notifies on off-track when confidence >= this; returned as `notifyAbove`. */
+export const NOTIFY_ABOVE: Record<Strictness, number> = { relaxed: 0.85, normal: 0.7, strict: 0.6 };
+
 // A goal candidate produced by the discover agent, before it is written to the graph.
 export type NewGoal = {
   title: string;

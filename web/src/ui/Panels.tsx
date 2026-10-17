@@ -2,61 +2,39 @@ import { useState, type ReactNode } from 'react'
 import type { Goal, PointsRow, Stats, User } from '../types'
 import { Calendar, Clock, Flame, Plus, Spark } from './icons'
 
-export function TopBar({ user, stats, points, view, onView }: {
-  user: User | null; stats: Stats; points: PointsRow | null; view: 'sky' | 'cosmos'; onView: (v: 'sky' | 'cosmos') => void
+export function TopBar({ user, stats, points, view, onView, onMenu }: {
+  user: User | null; stats: Stats; points: PointsRow | null
+  view: 'sky' | 'cosmos' | 'settings'; onView: (v: 'sky' | 'cosmos') => void; onMenu: () => void
 }) {
   const score = points?.points ?? stats.score
   const streak = points?.streak ?? stats.streak
   const minutes = points?.focusedMinutes ?? stats.focusedMinutes
   return (
     <header className="topbar">
-      <div className="brand">
-        <span className="brand-mark"><Spark size={15} /></span>
-        <span className="brand-name">North Star</span>
-      </div>
-      {user && (
+      {user ? (
+        <button className="menu-btn glass" onClick={onMenu} aria-label="Open navigation">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" aria-hidden><path d="M4 7h16M4 12h16M4 17h10" /></svg>
+        </button>
+      ) : (
+        <div className="brand">
+          <span className="brand-mark"><Spark size={15} /></span>
+          <span className="brand-name">North Star</span>
+        </div>
+      )}
+      {user ? (
         <nav className="segmented glass" aria-label="View">
           <button className={view === 'sky' ? 'is-active' : ''} onClick={() => onView('sky')}>My sky</button>
           <button className={view === 'cosmos' ? 'is-active' : ''} onClick={() => onView('cosmos')}>Cosmos</button>
         </nav>
-      )}
+      ) : <span />}
       {user ? (
         <div className="me glass">
           <span className="me-stat" title={points ? 'Points on the shared leaderboard' : 'Score'}><Spark size={12} /> {score.toLocaleString()}</span>
           <span className="me-stat" title="Day streak"><Flame /> {streak}</span>
           <span className="me-stat hide-narrow" title={points ? 'Verified focus time' : 'Focused time'}><Clock /> {formatHours(minutes)}</span>
-          <span className="me-avatar" style={{ background: user.color }}>{user.name.slice(0, 1).toUpperCase()}</span>
         </div>
       ) : <span />}
     </header>
-  )
-}
-
-export function StarRail({ goals, selected, discovering, color, onSelect, onNew }: {
-  goals: Goal[]; selected: string | null; discovering: boolean; color: string
-  onSelect: (id: string) => void; onNew: () => void
-}) {
-  if (goals.length === 0) return null
-  const brainstorm = goals.filter(g => g.status === 'brainstorm')
-  const stars = goals.filter(g => g.status !== 'brainstorm')
-  const chip = (g: Goal) => (
-    <button key={g.id} className={`rail-chip glass ${g.id === selected && !discovering ? 'is-active' : ''} ${g.status === 'brainstorm' ? 'is-little' : ''}`}
-      onClick={() => onSelect(g.id)}>
-      <span className="rail-dot" style={{ background: color, opacity: 0.35 + g.brightness * 0.65, boxShadow: `0 0 ${4 + g.brightness * 12}px ${color}` }} />
-      {g.title}
-    </button>
-  )
-  return (
-    <div className="rail">
-      {stars.length > 0 && <div className="rail-group"><span className="rail-label">Stars</span>{stars.map(chip)}</div>}
-      <div className="rail-group">
-        <span className="rail-label">Brainstorm</span>
-        {brainstorm.map(chip)}
-        <button className={`rail-chip rail-new ${discovering ? 'is-active glass' : ''}`} onClick={onNew}>
-          <Plus /> New star
-        </button>
-      </div>
-    </div>
   )
 }
 
@@ -164,11 +142,19 @@ export function GoalPanel({ goal, color, onToggle, focus, onAsk }: {
   )
 }
 
-export function Leaderboard({ rows, meId, offline }: { rows: PointsRow[]; meId?: string | null; offline: boolean }) {
+export function Leaderboard({ rows, meId, offline, mode, onMode }: {
+  rows: PointsRow[]; meId?: string | null; offline: boolean; mode: 'real' | 'demo'; onMode: (m: 'real' | 'demo') => void
+}) {
   return (
     <aside className="panel glass leaderboard">
-      <div className="eyebrow">The cosmos</div>
-      <h2 className="panel-title">Who’s shining</h2>
+      <div className="lb-head">
+        <div className="eyebrow">The cosmos</div>
+        <div className="seg seg-small" role="radiogroup" aria-label="Who to show">
+          <button role="radio" aria-checked={mode === 'real'} className={mode === 'real' ? 'is-active' : ''} onClick={() => onMode('real')}>Real</button>
+          <button role="radio" aria-checked={mode === 'demo'} className={mode === 'demo' ? 'is-active' : ''} onClick={() => onMode('demo')}>Demo</button>
+        </div>
+      </div>
+      <h2 className="panel-title">{mode === 'real' ? 'Who’s shining' : 'Who’s shining (demo)'}</h2>
       <p className="panel-why">One point per verified minute of focus, plus 25 for each day of your streak. Shared with every North Star and Goal Coach player.</p>
       <ol className="ranks">
         {rows.map(r => (
@@ -184,7 +170,7 @@ export function Leaderboard({ rows, meId, offline }: { rows: PointsRow[]; meId?:
           </li>
         ))}
         {rows.length === 0 && (
-          <li className="rank-empty">{offline ? 'The points service is offline. Start it with npm run dev.' : 'The cosmos is quiet. Be the first to focus.'}</li>
+          <li className="rank-empty">{offline ? 'The points service is offline. Start it with npm run dev.' : mode === 'real' ? 'No one else has connected yet. Switch to Demo to see a full sky.' : 'The cosmos is quiet. Be the first to focus.'}</li>
         )}
       </ol>
     </aside>

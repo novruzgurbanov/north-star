@@ -29,6 +29,23 @@ export type Stats = {
   starsLit: number
 }
 
+export type Settings = {
+  helpfulness: 'quiet' | 'balanced' | 'proactive'
+  checkSeconds: number
+  strictness: 'relaxed' | 'normal' | 'strict'
+  roast: 'off' | 'mild' | 'spicy'
+  notifications: boolean
+  cameraByDefault: boolean
+  suggestions: boolean
+  sounds: boolean
+  shareGoalTitle: boolean
+}
+
+export const DEFAULT_SETTINGS: Settings = {
+  helpfulness: 'balanced', checkSeconds: 20, strictness: 'normal', roast: 'mild',
+  notifications: true, cameraByDefault: false, suggestions: true, sounds: true, shareGoalTitle: true,
+}
+
 export type ChatMessage = { role: 'user' | 'assistant'; content: string }
 
 export type AgentEvent =
@@ -107,6 +124,7 @@ export interface NorthStarDesktop {
     resume(): Promise<FocusState>
     stop(): Promise<FocusState>
     setCamera(enabled: boolean): Promise<FocusState>
+    configure?(opts: { checkSeconds?: number; notifications?: boolean }): Promise<FocusState>
     getState(): Promise<FocusState>
     onState(listener: (state: FocusState) => void): () => void
   }

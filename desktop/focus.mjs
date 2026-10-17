@@ -44,6 +44,7 @@ export class FocusController {
       status: 'idle', userId: null, goalId: null, goalTitle: null,
       startedAt: null, nextCheckAt: null,
       checkSeconds: Number.isFinite(checkSeconds) ? Math.max(10, checkSeconds) : 20,
+      notificationsEnabled: true,
       sessionVerifiedSeconds: 0, checks: 0, cameraEnabled: false,
       cameraActive: false, lastCheck: null, lastResult: null, error: null,
       notice: null,
@@ -51,6 +52,8 @@ export class FocusController {
     this.notifyCooldownMs = (Number.isFinite(notifyCooldownSeconds)
       ? Math.max(5, notifyCooldownSeconds) : 20) * 1_000;
     this.timer = null;
+    this.timerArmedAt = null;
+    this.timerFireAt = null;
     this.generation = 0;
     this.cameraGeneration = 0;
     this.inFlight = false;
@@ -159,6 +162,39 @@ export class FocusController {
     return this.getState();
   }
 
+  // Settings from the web UI. Malformed fields are ignored; valid fields in the
+  // same call still apply. A new interval always applies to the check scheduled
+  // after the next one, and pulls the pending check earlier when it would
+  // otherwise wait longer than lastCheck + interval (but never fires sooner
+  // than 1 s from now).
+  configure(options) {
+    if (!options || typeof options !== 'object' || Array.isArray(options)) return this.getState();
+    let changed = false;
+    const { checkSeconds, notifications } = options;
+    if (Number.isInteger(checkSeconds) && checkSeconds >= 10 && checkSeconds <= 300) {
+      this.state.checkSeconds = checkSeconds;
+      changed = true;
+    }
+    if (typeof notifications === 'boolean') {
+      this.state.notificationsEnabled = notifications;
+      changed = true;
+    }
+    if (!changed) return this.getState();
+    this.reschedulePending();
+    this.emit();
+    return this.getState();
+  }
+
+  reschedulePending() {
+    if (this.timer === null || this.state.status !== 'active') return;
+    const now = this.deps.now();
+    const fireAt = Math.max(this.timerArmedAt + this.state.checkSeconds * 1_000, now + 1_000);
+    if (this.timerFireAt <= fireAt) return;
+    this.deps.clearTimer(this.timer);
+    this.timer = null;
+    this.schedule(fireAt - now);
+  }
+
   cameraUnavailable() {
     this.cameraGeneration += 1;
     this.state.cameraActive = false;
@@ -167,7 +203,10 @@ export class FocusController {
 
   schedule(delay) {
     if (this.state.status !== 'active') return;
-    this.state.nextCheckAt = new Date(this.deps.now() + delay).toISOString();
+    const armedAt = this.deps.now();
+    this.state.nextCheckAt = new Date(armedAt + delay).toISOString();
+    this.timerArmedAt = armedAt;
+    this.timerFireAt = armedAt + delay;
     this.timer = this.deps.setTimer(() => {
       this.timer = null;
       void this.runCheck();
@@ -231,7 +270,10 @@ export class FocusController {
       this.state.lastResult = {
         goal: result.goal ?? null, stats: result.stats ?? null, points: result.points ?? null,
       };
-      if (result.verdict === 'off_track' && result.confidence >= 0.7
+      const notifyAbove = Number.isFinite(result.notifyAbove)
+        && result.notifyAbove >= 0 && result.notifyAbove <= 1 ? result.notifyAbove : 0.7;
+      if (result.verdict === 'off_track' && result.confidence >= notifyAbove
+        && this.state.notificationsEnabled
         && this.deps.now() - this.lastNotificationAt >= this.notifyCooldownMs) {
         this.lastNotificationAt = this.deps.now();
         this.deps.notify(notificationBody(this.state.lastCheck, this.state.goalTitle));

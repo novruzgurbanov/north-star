@@ -1,10 +1,12 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { api } from './api'
 import { sound } from './sound'
-import type { ChatMessage, FocusState, Goal, PointsRow, Stats, User } from './types'
-import { Universe, type View } from './scene/Universe'
+import { DEFAULT_SETTINGS, type ChatMessage, type FocusState, type Goal, type PointsRow, type Settings, type Stats, type User } from './types'
+import { Universe } from './scene/Universe'
+import { Sidebar, type View } from './ui/Sidebar'
+import { SettingsView } from './ui/SettingsView'
 import { ChatDock } from './ui/ChatDock'
-import { GoalPanel, Leaderboard, Onboarding, StarRail, TopBar } from './ui/Panels'
+import { GoalPanel, Leaderboard, Onboarding, TopBar } from './ui/Panels'
 import { FocusCard } from './ui/FocusCard'
 
 const desktop = typeof window !== 'undefined' ? window.northStarDesktop : undefined
@@ -42,9 +44,15 @@ export default function App() {
   const [view, setView] = useState<View>('sky')
   const [leaders, setLeaders] = useState<PointsRow[]>([])
   const [pointsOffline, setPointsOffline] = useState(false)
+  const [cosmosMode, setCosmosMode] = useState<'real' | 'demo'>(() => read('ns.cosmosMode', 'real'))
   const [myPoints, setMyPoints] = useState<PointsRow | null>(null)
   const [focus, setFocus] = useState<FocusState | null>(null)
   const [useCamera, setUseCamera] = useState(() => read('ns.camera', false))
+  const [settings, setSettings] = useState<Settings>(DEFAULT_SETTINGS)
+  const [settingsSaving, setSettingsSaving] = useState(false)
+  const [navOpen, setNavOpen] = useState(false)
+  const settingsTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const pendingSettings = useRef<Partial<Settings>>({})
   const [bornAt, setBornAt] = useState<Record<string, number>>({})
   const [toasts, setToasts] = useState<Toast[]>([])
   const [suggestions, setSuggestions] = useState<Record<string, string[]>>({})
@@ -70,6 +78,7 @@ export default function App() {
         setStats(res.stats)
         setUser(res.user)
         if (res.points !== undefined) setMyPoints(res.points)
+        if (res.settings) { setSettings(res.settings); setUseCamera(res.settings.cameraByDefault) }
         if (sorted.length) setSelected(sorted[sorted.length - 1].id)
         setForgeIndex(sorted.length)
       })
@@ -91,10 +100,11 @@ export default function App() {
 
   // Everyone's points, from the shared points service. Refreshed often in cosmos view, slowly otherwise.
   const refreshCosmos = useCallback(() => {
-    api.leaderboard()
+    api.leaderboard(cosmosMode)
       .then(r => { setLeaders(r.rows); setPointsOffline(r.offline) })
       .catch(() => setPointsOffline(true))
-  }, [])
+  }, [cosmosMode])
+  useEffect(() => { write('ns.cosmosMode', cosmosMode) }, [cosmosMode])
   useEffect(() => {
     refreshCosmos()
     const id = setInterval(refreshCosmos, view === 'cosmos' ? 6000 : 20000)
@@ -259,6 +269,30 @@ export default function App() {
     />
   )
 
+  // Settings apply instantly and save in the background (debounced for the slider).
+  const changeSettings = (patch: Partial<Settings>) => {
+    if (!user) return
+    setSettings(s => ({ ...s, ...patch }))
+    if (patch.cameraByDefault !== undefined && !(focus && focus.status !== 'idle')) setUseCamera(patch.cameraByDefault)
+    pendingSettings.current = { ...pendingSettings.current, ...patch }
+    setSettingsSaving(true)
+    if (settingsTimer.current) clearTimeout(settingsTimer.current)
+    settingsTimer.current = setTimeout(() => {
+      const body = pendingSettings.current
+      pendingSettings.current = {}
+      api.saveSettings(user.id, body)
+        .then(r => setSettings(r.settings))
+        .catch(() => toast('Could not save settings.'))
+        .finally(() => setSettingsSaving(false))
+    }, 400)
+  }
+
+  useEffect(() => { sound.setEnabled(settings.sounds) }, [settings.sounds])
+  useEffect(() => {
+    void desktop?.focus.configure?.({ checkSeconds: settings.checkSeconds, notifications: settings.notifications })
+      .then(setFocus).catch(() => {})
+  }, [settings.checkSeconds, settings.notifications])
+
   const startNewStar = () => {
     setSelected(null)
     setForgeIndex(goals.length)
@@ -276,7 +310,7 @@ export default function App() {
   const color = user?.color ?? '#cfe2ff'
 
   return (
-    <div className={`app view-${view} ${selectedGoal && !discovering ? 'has-panel' : ''} ${desktop ? 'is-desktop' : ''}`} style={{ ['--me' as string]: color }}>
+    <div className={`app view-${view} ${user ? 'has-nav' : ''} ${view === 'sky' && selectedGoal && !discovering ? 'has-panel' : ''} ${desktop ? 'is-desktop' : ''}`} style={{ ['--me' as string]: color }}>
       <Universe
         me={user}
         myGoals={goals}
@@ -284,28 +318,36 @@ export default function App() {
         focusIndex={focusIndex}
         discovering={discovering}
         understanding={understanding}
-        view={view}
+        view={view === 'cosmos' ? 'cosmos' : 'sky'}
+        nav={!!user}
         others={others}
         myScore={myRow?.points ?? stats.score}
         focusing={focusingGoal}
       />
 
-      <TopBar user={user} stats={stats} points={myRow ?? null} view={view} onView={v => { sound.unlock(); setView(v) }} />
+      <TopBar user={user} stats={stats} points={myRow ?? null} view={view} onView={v => { sound.unlock(); setView(v) }} onMenu={() => setNavOpen(true)} />
 
-      {user && view === 'sky' && (
+      {user && (
+        <Sidebar user={user} goals={goals} selected={selected} discovering={discovering} focusingGoalId={focusingGoal}
+          view={view} stats={stats} points={myRow ?? null} open={navOpen}
+          onSelect={id => { setSelected(id); setView('sky') }} onNew={startNewStar}
+          onView={v => { sound.unlock(); setView(v) }} onClose={() => setNavOpen(false)} />
+      )}
+
+      {user && view === 'sky' && selectedGoal && !discovering && (
         <div className="left-column">
-          <StarRail goals={goals} selected={selected} discovering={discovering} color={color}
-            onSelect={id => setSelected(id)} onNew={startNewStar} />
-          {selectedGoal && !discovering && (
-            <GoalPanel key={selectedGoal.id} goal={selectedGoal} color={color} onToggle={toggleMilestone} focus={focusControls(selectedGoal)}
-              onAsk={text => { if (!busy) void send(text) }} />
-          )}
+          <GoalPanel key={selectedGoal.id} goal={selectedGoal} color={color} onToggle={toggleMilestone} focus={focusControls(selectedGoal)}
+            onAsk={text => { if (!busy) void send(text) }} />
         </div>
+      )}
+
+      {user && view === 'settings' && (
+        <SettingsView settings={settings} saving={settingsSaving} desktop={!!desktop} onChange={changeSettings} />
       )}
 
       {user && view === 'cosmos' && (
         <>
-          <Leaderboard rows={leaders} meId={meId} offline={pointsOffline} />
+          <Leaderboard rows={leaders} meId={meId} offline={pointsOffline} mode={cosmosMode} onMode={setCosmosMode} />
           <p className="cosmos-caption">Every constellation is someone’s goal. It grows brighter with every verified minute they work on it.</p>
         </>
       )}
@@ -320,7 +362,7 @@ export default function App() {
           goalTitle={selectedGoal?.title}
           onSend={send}
           onError={toast}
-          suggestions={suggestions[threadKey] ?? []}
+          suggestions={settings.suggestions ? suggestions[threadKey] ?? [] : []}
           little={selectedGoal?.status === 'brainstorm'}
         />
       )}
