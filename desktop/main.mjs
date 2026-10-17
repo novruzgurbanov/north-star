@@ -288,7 +288,7 @@ async function loadWebUI() {
 }
 
 function createWindows() {
-  const ses = session.fromPartition('persist:north-star', { cache: false }) // persist: keeps localStorage (who you are) across launches;
+  const ses = session.fromPartition('persist:north-star', { cache: false }); // persist: keeps localStorage (who you are) across launches
   mainWindow = new BrowserWindow({
     width: 1440, height: 900, minWidth: 960, minHeight: 640,
     title: 'North Star', backgroundColor: '#020309', show: false,
